@@ -1,0 +1,18 @@
+[package]
+name = "heightmap-gen"
+version = "0.1.0"
+edition = "2021"
+description = "Procedural heightmap generator with egui GUI"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+egui_extras = { version = "0.31", features = ["image"] }
+image = "0.25"
+noise = "0.9"
+rand = "0.8"
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = true
