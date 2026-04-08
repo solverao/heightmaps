@@ -35,11 +35,11 @@ fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
 
     match fractal_type {
         FractalType::None => match noise_type {
-            NoiseType::Perlin       => { let n = Perlin::new(s);       Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::OpenSimplex  => { let n = OpenSimplex::new(s);  Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::SuperSimplex => { let n = SuperSimplex::new(s); Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::Value        => { let n = Value::new(s);        Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::Worley       => { let n = Worley::new(s);       Box::new(move |x, y| n.get([x * freq, y * freq])) }
+            NoiseType::Perlin       => { let n = Perlin::new(s);       Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
+            NoiseType::OpenSimplex  => { let n = OpenSimplex::new(s);  Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
+            NoiseType::SuperSimplex => { let n = SuperSimplex::new(s); Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
+            NoiseType::Value        => { let n = Value::new(s);        Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
+            NoiseType::Worley       => { let n = Worley::new(s);       Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
         },
         FractalType::Fbm => {
             let n = Fbm::<Perlin>::new(s).set_octaves(octaves).set_frequency(freq)
@@ -98,6 +98,12 @@ pub struct HeightmapApp {
     pub offset_x: f64,
     pub offset_y: f64,
 
+    // Chunk navigation
+    pub chunk_mode: bool,
+    pub chunk_x: i32,
+    pub chunk_y: i32,
+    pub chunk_size: f64,
+
     // Domain warp
     pub warp_enabled: bool,
     pub warp_strength: f64,
@@ -125,6 +131,9 @@ pub struct HeightmapApp {
     pub falloff_inner: f32,
     pub falloff_outer: f32,
     pub falloff_shape: FalloffShape,
+    pub falloff_edge_noise: f32,   // 0 = perfecto, >0 = orilla irregular
+    pub falloff_noise_freq: f32,   // frecuencia del ruido de orilla
+    pub falloff_exponent: f32,     // <1 suave, >1 pronunciado
 
     // Preview
     pub color_mode: ColorMode,
@@ -153,6 +162,10 @@ impl Default for HeightmapApp {
             persistence: 0.5,
             offset_x: 0.0,
             offset_y: 0.0,
+            chunk_mode: false,
+            chunk_x: 0,
+            chunk_y: 0,
+            chunk_size: 1.0,
             warp_enabled: false,
             warp_strength: 0.3,
             warp_frequency: 2.0,
@@ -169,6 +182,9 @@ impl Default for HeightmapApp {
             falloff_inner: 0.3,
             falloff_outer: 0.7,
             falloff_shape: FalloffShape::Circle,
+            falloff_edge_noise: 0.15,
+            falloff_noise_freq: 3.0,
+            falloff_exponent: 1.0,
             color_mode: ColorMode::Grayscale,
             preview_texture: None,
             heightmap_data: Vec::new(),
@@ -182,7 +198,19 @@ impl Default for HeightmapApp {
 }
 
 impl HeightmapApp {
+    pub fn effective_offset(&self) -> (f64, f64) {
+        if self.chunk_mode {
+            (
+                self.chunk_x as f64 * self.chunk_size,
+                self.chunk_y as f64 * self.chunk_size,
+            )
+        } else {
+            (self.offset_x, self.offset_y)
+        }
+    }
+
     fn main_sampler_params(&self) -> SamplerParams {
+        let (ox, oy) = self.effective_offset();
         SamplerParams {
             seed: self.seed,
             noise_type: self.noise_type,
@@ -191,8 +219,8 @@ impl HeightmapApp {
             octaves: self.octaves as usize,
             lacunarity: self.lacunarity,
             persistence: self.persistence,
-            offset_x: self.offset_x,
-            offset_y: self.offset_y,
+            offset_x: ox,
+            offset_y: oy,
         }
     }
 
@@ -231,8 +259,7 @@ impl HeightmapApp {
         let base_oct  = self.octaves as usize;
         let base_lac  = self.lacunarity;
         let base_per  = self.persistence;
-        let base_ox   = self.offset_x;
-        let base_oy   = self.offset_y;
+        let (base_ox, base_oy) = self.effective_offset();
 
         let active: Vec<(f32, BlendMode, Box<dyn Fn(f64,f64)->f64>)> = self.layers.iter()
             .filter(|l| l.enabled)
@@ -333,19 +360,36 @@ impl HeightmapApp {
 
         // ── Falloff map ─────────────────────────────────────────────────────
         if self.falloff_enabled {
-            let inner = self.falloff_inner as f64;
-            let outer = self.falloff_outer as f64;
-            let shape = self.falloff_shape;
+            let inner     = self.falloff_inner as f64;
+            let outer     = self.falloff_outer as f64;
+            let shape     = self.falloff_shape;
+            let edge_noise = self.falloff_edge_noise as f64;
+            let noise_freq = self.falloff_noise_freq as f64;
+            let exponent  = self.falloff_exponent as f64;
+
+            // Two independent Perlin instances warp the distance field,
+            // breaking the perfect geometry and creating organic coastlines.
+            let warp_x = Perlin::new(self.seed.wrapping_add(555));
+            let warp_y = Perlin::new(self.seed.wrapping_add(666));
+
             for y in 0..size {
                 for x in 0..size {
-                    let nx = x as f64 / size as f64 - 0.5; // -0.5..0.5
-                    let ny = y as f64 / size as f64 - 0.5;
+                    let orig_nx = x as f64 / size as f64 - 0.5;
+                    let orig_ny = y as f64 / size as f64 - 0.5;
+
+                    // Perturb coordinates with noise before measuring distance
+                    let nx = orig_nx + warp_x.get([orig_nx * noise_freq, orig_ny * noise_freq]) * edge_noise;
+                    let ny = orig_ny + warp_y.get([orig_nx * noise_freq, orig_ny * noise_freq]) * edge_noise;
+
                     let dist = match shape {
                         FalloffShape::Circle => (nx * nx + ny * ny).sqrt() * 2.0,
                         FalloffShape::Square => nx.abs().max(ny.abs()) * 2.0,
                     };
+
                     let t = ((dist - inner) / (outer - inner).max(1e-6)).clamp(0.0, 1.0);
-                    let falloff = (1.0 - t * t * (3.0 - 2.0 * t)) as f32;
+                    // Smoothstep, luego curva de potencia para controlar la pendiente
+                    let smooth = 1.0 - t * t * (3.0 - 2.0 * t);
+                    let falloff = smooth.powf(exponent) as f32;
                     data[y * size + x] *= falloff;
                 }
             }

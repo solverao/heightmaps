@@ -106,15 +106,64 @@ impl eframe::App for HeightmapApp {
                 }
 
                 ui.add_space(4.0);
-                ui.label("Offset X / Y");
                 ui.horizontal(|ui| {
-                    if ui.add(egui::DragValue::new(&mut self.offset_x).speed(0.01).prefix("X: ")).changed() {
-                        self.dirty = true;
-                    }
-                    if ui.add(egui::DragValue::new(&mut self.offset_y).speed(0.01).prefix("Y: ")).changed() {
+                    if ui.checkbox(&mut self.chunk_mode, "Chunk mode").changed() {
                         self.dirty = true;
                     }
                 });
+
+                if self.chunk_mode {
+                    // ── Chunk navigation ──
+                    ui.add_space(4.0);
+                    ui.label("Tamaño de chunk");
+                    if ui.add(egui::Slider::new(&mut self.chunk_size, 0.25..=4.0).logarithmic(true)).changed() {
+                        self.dirty = true;
+                    }
+
+                    ui.add_space(4.0);
+                    // Row: ↑
+                    ui.vertical_centered(|ui| {
+                        if ui.button("  ↑  ").clicked() {
+                            self.chunk_y -= 1;
+                            self.dirty = true;
+                        }
+                    });
+                    // Row: ← coord →
+                    ui.horizontal(|ui| {
+                        if ui.button(" ← ").clicked() { self.chunk_x -= 1; self.dirty = true; }
+                        ui.label(format!("X {:>3}  Y {:>3}", self.chunk_x, self.chunk_y));
+                        if ui.button(" → ").clicked() { self.chunk_x += 1; self.dirty = true; }
+                    });
+                    // Row: ↓
+                    ui.vertical_centered(|ui| {
+                        if ui.button("  ↓  ").clicked() {
+                            self.chunk_y += 1;
+                            self.dirty = true;
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    if ui.small_button("Reset (0, 0)").clicked() {
+                        self.chunk_x = 0;
+                        self.chunk_y = 0;
+                        self.dirty = true;
+                    }
+
+                    let (ox, oy) = self.effective_offset();
+                    ui.label(format!("Offset: X={ox:.2}  Y={oy:.2}"));
+                } else {
+                    // ── Manual offset ──
+                    ui.add_space(4.0);
+                    ui.label("Offset X / Y");
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::DragValue::new(&mut self.offset_x).speed(0.01).prefix("X: ")).changed() {
+                            self.dirty = true;
+                        }
+                        if ui.add(egui::DragValue::new(&mut self.offset_y).speed(0.01).prefix("Y: ")).changed() {
+                            self.dirty = true;
+                        }
+                    });
+                }
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -241,6 +290,18 @@ impl eframe::App for HeightmapApp {
                     }
                     ui.label("Radio exterior (borde)");
                     if ui.add(egui::Slider::new(&mut self.falloff_outer, 0.0..=1.0)).changed() {
+                        self.dirty = true;
+                    }
+                    ui.label("Irregularidad de orilla");
+                    if ui.add(egui::Slider::new(&mut self.falloff_edge_noise, 0.0..=0.5)).changed() {
+                        self.dirty = true;
+                    }
+                    ui.label("Frecuencia de orilla");
+                    if ui.add(egui::Slider::new(&mut self.falloff_noise_freq, 0.5..=12.0).logarithmic(true)).changed() {
+                        self.dirty = true;
+                    }
+                    ui.label("Curva (suave ↔ pronunciado)");
+                    if ui.add(egui::Slider::new(&mut self.falloff_exponent, 0.2..=4.0).logarithmic(true)).changed() {
                         self.dirty = true;
                     }
                 }
