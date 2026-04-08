@@ -4,6 +4,7 @@ use noise::{
     BasicMulti, Billow, Fbm, HybridMulti, MultiFractal, NoiseFn, OpenSimplex, Perlin, RidgedMulti,
     SuperSimplex, Value, Worley,
 };
+use rand::SeedableRng;
 use std::path::PathBuf;
 
 use crate::types::{BlendMode, ColorMode, FalloffShape, FractalType, Layer, NoiseType, PostProcess};
@@ -67,6 +68,46 @@ fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
             Box::new(move |x, y| n.get([x + offset_x, y + offset_y]))
         }
     }
+}
+
+// ── Hydraulic erosion helpers ───────────────────────────────────────────────
+
+fn hyd_sample(data: &[f32], n: usize, x: f32, y: f32) -> f32 {
+    let xi = (x.floor() as usize).min(n - 2);
+    let yi = (y.floor() as usize).min(n - 2);
+    let fx = x - xi as f32;
+    let fy = y - yi as f32;
+    let h00 = data[yi * n + xi];
+    let h10 = data[yi * n + xi + 1];
+    let h01 = data[(yi + 1) * n + xi];
+    let h11 = data[(yi + 1) * n + xi + 1];
+    h00 * (1.0 - fx) * (1.0 - fy) + h10 * fx * (1.0 - fy)
+        + h01 * (1.0 - fx) * fy   + h11 * fx * fy
+}
+
+fn hyd_gradient(data: &[f32], n: usize, x: f32, y: f32) -> (f32, f32) {
+    let xi = (x.floor() as usize).min(n - 2);
+    let yi = (y.floor() as usize).min(n - 2);
+    let fx = x - xi as f32;
+    let fy = y - yi as f32;
+    let h00 = data[yi * n + xi];
+    let h10 = data[yi * n + xi + 1];
+    let h01 = data[(yi + 1) * n + xi];
+    let h11 = data[(yi + 1) * n + xi + 1];
+    let gx = (h10 - h00) * (1.0 - fy) + (h11 - h01) * fy;
+    let gy = (h01 - h00) * (1.0 - fx) + (h11 - h10) * fx;
+    (gx, gy)
+}
+
+fn hyd_deposit(data: &mut [f32], n: usize, x: f32, y: f32, amount: f32) {
+    let xi = (x.floor() as usize).min(n - 2);
+    let yi = (y.floor() as usize).min(n - 2);
+    let fx = x - xi as f32;
+    let fy = y - yi as f32;
+    data[yi * n + xi]         += amount * (1.0 - fx) * (1.0 - fy);
+    data[yi * n + xi + 1]     += amount * fx           * (1.0 - fy);
+    data[(yi + 1) * n + xi]   += amount * (1.0 - fx) * fy;
+    data[(yi + 1) * n + xi+1] += amount * fx           * fy;
 }
 
 // ── Seamless blend helper ───────────────────────────────────────────────────
@@ -135,6 +176,23 @@ pub struct HeightmapApp {
     pub falloff_noise_freq: f32,   // frecuencia del ruido de orilla
     pub falloff_exponent: f32,     // <1 suave, >1 pronunciado
 
+    // 3D view
+    pub view_3d: bool,
+    pub view_rot: f32,
+    pub elevation_scale: f32,
+    pub view3d_res: u32,
+    pub view3d_data: Vec<f32>,
+    pub view3d_dirty: bool,
+
+    // Hydraulic erosion
+    pub erosion_enabled: bool,
+    pub erosion_droplets: u32,
+    pub erosion_inertia: f32,
+    pub erosion_capacity: f32,
+    pub erosion_deposition: f32,
+    pub erosion_erosion_speed: f32,
+    pub erosion_evaporation: f32,
+
     // Preview
     pub color_mode: ColorMode,
     pub preview_texture: Option<TextureHandle>,
@@ -185,6 +243,19 @@ impl Default for HeightmapApp {
             falloff_edge_noise: 0.15,
             falloff_noise_freq: 3.0,
             falloff_exponent: 1.0,
+            view_3d: false,
+            view_rot: 30.0,
+            elevation_scale: 0.5,
+            view3d_res: 64,
+            view3d_data: Vec::new(),
+            view3d_dirty: true,
+            erosion_enabled: false,
+            erosion_droplets: 30_000,
+            erosion_inertia: 0.05,
+            erosion_capacity: 8.0,
+            erosion_deposition: 0.1,
+            erosion_erosion_speed: 0.3,
+            erosion_evaporation: 0.02,
             color_mode: ColorMode::Grayscale,
             preview_texture: None,
             heightmap_data: Vec::new(),
@@ -395,6 +466,11 @@ impl HeightmapApp {
             }
         }
 
+        // ── Hydraulic erosion ───────────────────────────────────────────────
+        if self.erosion_enabled {
+            self.erode(&mut data, size);
+        }
+
         // ── Post-process ────────────────────────────────────────────────────
         for v in data.iter_mut() {
             *v = match self.post_process {
@@ -417,6 +493,12 @@ impl HeightmapApp {
         data
     }
 
+    pub fn rebuild_3d(&mut self) {
+        let res = self.view3d_res;
+        self.view3d_data = self.generate(res);
+        self.view3d_dirty = false;
+    }
+
     pub fn rebuild_preview(&mut self, ctx: &egui::Context) {
         let start = std::time::Instant::now();
         let res = self.resolution;
@@ -432,6 +514,93 @@ impl HeightmapApp {
         let tex = ctx.load_texture("heightmap_preview", img, TextureOptions::NEAREST);
         self.preview_texture = Some(tex);
         self.dirty = false;
+        self.view3d_dirty = true; // 3D data needs regenerating at its own res
+    }
+
+    fn erode(&self, data: &mut Vec<f32>, size: usize) {
+        use rand::Rng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed as u64 ^ 0xDEAD_BEEF);
+
+        let n          = size;
+        let inertia    = self.erosion_inertia;
+        let capacity   = self.erosion_capacity;
+        let deposit_k  = self.erosion_deposition;
+        let erode_k    = self.erosion_erosion_speed;
+        let evaporate  = self.erosion_evaporation;
+        let gravity    = 10.0_f32;
+        let max_steps  = 64_usize;
+        let min_slope  = 0.001_f32;
+
+        for _ in 0..self.erosion_droplets {
+            // Random start in pixel space, away from borders
+            let mut x = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
+            let mut y = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
+            let mut dir_x   = 0.0_f32;
+            let mut dir_y   = 0.0_f32;
+            let mut speed   = 1.0_f32;
+            let mut water   = 1.0_f32;
+            let mut sediment = 0.0_f32;
+
+            for _ in 0..max_steps {
+                // Gradient at current position
+                let (gx, gy) = hyd_gradient(data, n, x, y);
+
+                // Update direction with inertia
+                dir_x = dir_x * inertia - gx * (1.0 - inertia);
+                dir_y = dir_y * inertia - gy * (1.0 - inertia);
+                let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1e-6);
+                dir_x /= len;
+                dir_y /= len;
+
+                let nx = x + dir_x;
+                let ny = y + dir_y;
+
+                // Stop if out of bounds
+                if nx < 0.5 || nx >= (n - 1) as f32 - 0.5
+                    || ny < 0.5 || ny >= (n - 1) as f32 - 0.5 {
+                    break;
+                }
+
+                let h_old = hyd_sample(data, n, x, y);
+                let h_new = hyd_sample(data, n, nx, ny);
+                let delta_h = h_new - h_old;
+
+                // Sediment capacity proportional to speed, water, and slope
+                let c = (-delta_h).max(min_slope) * speed * water * capacity;
+
+                if sediment > c || delta_h > 0.0 {
+                    // Deposit: fill uphill gaps fully, otherwise deposit fraction
+                    let deposit = if delta_h > 0.0 {
+                        delta_h.min(sediment)
+                    } else {
+                        (sediment - c) * deposit_k
+                    };
+                    sediment -= deposit;
+                    hyd_deposit(data, n, x, y, deposit);
+                } else {
+                    // Erode: remove sediment from current cell
+                    let amount = ((c - sediment) * erode_k).min(-delta_h.max(0.0) + 0.01);
+                    let amount = amount.max(0.0);
+                    sediment  += amount;
+                    hyd_deposit(data, n, x, y, -amount);
+                }
+
+                speed = (speed * speed + delta_h.abs() * gravity).sqrt().max(0.01);
+                water *= 1.0 - evaporate;
+                x = nx;
+                y = ny;
+
+                if water < 0.001 { break; }
+            }
+        }
+
+        // Re-normalize to 0..1 after erosion shifts the range
+        let min = data.iter().cloned().fold(f32::MAX, f32::min);
+        let max = data.iter().cloned().fold(f32::MIN, f32::max);
+        let range = (max - min).max(1e-10);
+        for v in data.iter_mut() {
+            *v = (*v - min) / range;
+        }
     }
 
     pub fn export_png(&mut self, path: PathBuf) -> Result<(), String> {

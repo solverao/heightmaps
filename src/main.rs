@@ -1,6 +1,7 @@
 mod app;
 mod types;
 mod ui;
+mod view3d;
 
 use app::HeightmapApp;
 

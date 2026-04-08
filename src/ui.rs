@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::app::HeightmapApp;
 use crate::types::{BlendMode, ColorMode, FalloffShape, FractalType, NoiseType, PostProcess};
+use crate::view3d;
 
 impl eframe::App for HeightmapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -14,6 +15,30 @@ impl eframe::App for HeightmapApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("⛰ Heightmap Generator");
+                ui.separator();
+
+                // ── Vista ──
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(!self.view_3d, "2D").clicked() {
+                        self.view_3d = false;
+                    }
+                    if ui.selectable_label(self.view_3d, "3D").clicked() {
+                        self.view_3d = true;
+                    }
+                });
+
+                if self.view_3d {
+                    ui.add_space(4.0);
+                    ui.label("Rotación");
+                    ui.add(egui::Slider::new(&mut self.view_rot, 0.0..=360.0).suffix("°"));
+                    ui.label("Escala vertical");
+                    ui.add(egui::Slider::new(&mut self.elevation_scale, 0.05..=3.0).logarithmic(true));
+                    ui.label("Resolución 3D");
+                    if ui.add(egui::Slider::new(&mut self.view3d_res, 16..=128).suffix("px")).changed() {
+                        self.view3d_dirty = true;
+                    }
+                }
+
                 ui.separator();
 
                 // ── Noise ──
@@ -229,6 +254,47 @@ impl eframe::App for HeightmapApp {
                 ui.add_space(8.0);
                 ui.separator();
 
+                // ── Hydraulic erosion ──
+                egui::CollapsingHeader::new("Erosión hidráulica")
+                    .id_salt("erosion")
+                    .show(ui, |ui| {
+                        if ui.checkbox(&mut self.erosion_enabled, "Activa").changed() {
+                            self.dirty = true;
+                        }
+                        if !self.erosion_enabled { return; }
+
+                        ui.add_space(2.0);
+                        ui.label("Gotas");
+                        if ui.add(egui::Slider::new(&mut self.erosion_droplets, 1_000..=150_000).logarithmic(true)).changed() {
+                            self.dirty = true;
+                        }
+                        ui.label("Inercia  (0 = gira rápido, 1 = recto)");
+                        if ui.add(egui::Slider::new(&mut self.erosion_inertia, 0.0..=0.99)).changed() {
+                            self.dirty = true;
+                        }
+                        ui.label("Capacidad de sedimento");
+                        if ui.add(egui::Slider::new(&mut self.erosion_capacity, 1.0..=20.0)).changed() {
+                            self.dirty = true;
+                        }
+                        ui.label("Deposición");
+                        if ui.add(egui::Slider::new(&mut self.erosion_deposition, 0.01..=1.0)).changed() {
+                            self.dirty = true;
+                        }
+                        ui.label("Velocidad de erosión");
+                        if ui.add(egui::Slider::new(&mut self.erosion_erosion_speed, 0.01..=1.0)).changed() {
+                            self.dirty = true;
+                        }
+                        ui.label("Evaporación");
+                        if ui.add(egui::Slider::new(&mut self.erosion_evaporation, 0.001..=0.1).logarithmic(true)).changed() {
+                            self.dirty = true;
+                        }
+                        ui.add_space(2.0);
+                        ui.weak(format!("~{} M iteraciones", self.erosion_droplets / 1000));
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+
                 // ── Post-process ──
                 ui.label("Post-process");
                 egui::ComboBox::from_id_salt("post_process")
@@ -387,7 +453,26 @@ impl eframe::App for HeightmapApp {
             if self.dirty {
                 self.rebuild_preview(ctx);
             }
-            if let Some(tex) = &self.preview_texture {
+
+            if self.view_3d {
+                if self.view3d_dirty {
+                    self.rebuild_3d();
+                }
+                let rect = ui.available_rect_before_wrap();
+                let painter = ui.painter_at(rect);
+                // Dark background
+                painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
+                view3d::draw(
+                    &self.view3d_data,
+                    self.view3d_res as usize,
+                    &painter,
+                    rect,
+                    self.view_rot,
+                    self.elevation_scale,
+                    self.color_mode,
+                );
+                ui.allocate_rect(rect, egui::Sense::hover());
+            } else if let Some(tex) = &self.preview_texture {
                 let avail = ui.available_size();
                 let side = avail.x.min(avail.y);
                 ui.centered_and_justified(|ui| {
