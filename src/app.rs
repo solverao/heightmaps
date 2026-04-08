@@ -184,6 +184,15 @@ pub struct HeightmapApp {
     pub view3d_data: Vec<f32>,
     pub view3d_dirty: bool,
 
+    // Gaussian blur
+    pub blur_enabled: bool,
+    pub blur_sigma: f32,
+
+    // Percentile normalize
+    pub percentile_enabled: bool,
+    pub percentile_low: f32,
+    pub percentile_high: f32,
+
     // Hydraulic erosion
     pub erosion_enabled: bool,
     pub erosion_droplets: u32,
@@ -256,6 +265,11 @@ impl Default for HeightmapApp {
             erosion_deposition: 0.1,
             erosion_erosion_speed: 0.3,
             erosion_evaporation: 0.02,
+            blur_enabled: false,
+            blur_sigma: 1.5,
+            percentile_enabled: false,
+            percentile_low: 2.0,
+            percentile_high: 98.0,
             color_mode: ColorMode::Grayscale,
             preview_texture: None,
             heightmap_data: Vec::new(),
@@ -471,6 +485,16 @@ impl HeightmapApp {
             self.erode(&mut data, size);
         }
 
+        // ── Gaussian blur ────────────────────────────────────────────────────
+        if self.blur_enabled {
+            self.gaussian_blur(&mut data, size);
+        }
+
+        // ── Percentile normalize ─────────────────────────────────────────────
+        if self.percentile_enabled {
+            self.percentile_normalize(&mut data);
+        }
+
         // ── Post-process ────────────────────────────────────────────────────
         for v in data.iter_mut() {
             *v = match self.post_process {
@@ -515,6 +539,60 @@ impl HeightmapApp {
         self.preview_texture = Some(tex);
         self.dirty = false;
         self.view3d_dirty = true; // 3D data needs regenerating at its own res
+    }
+
+    fn gaussian_blur(&self, data: &mut Vec<f32>, size: usize) {
+        let sigma = self.blur_sigma;
+        let radius = (sigma * 3.0).ceil() as usize;
+        let kernel_size = radius * 2 + 1;
+
+        // Build 1D Gaussian kernel
+        let mut kernel: Vec<f32> = (0..kernel_size).map(|i| {
+            let x = i as f32 - radius as f32;
+            (-x * x / (2.0 * sigma * sigma)).exp()
+        }).collect();
+        let sum: f32 = kernel.iter().sum();
+        kernel.iter_mut().for_each(|k| *k /= sum);
+
+        let mut tmp = vec![0.0f32; size * size];
+
+        // Horizontal pass
+        for y in 0..size {
+            for x in 0..size {
+                let mut acc = 0.0f32;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    let sx = (x as i32 + ki as i32 - radius as i32).clamp(0, size as i32 - 1) as usize;
+                    acc += data[y * size + sx] * kv;
+                }
+                tmp[y * size + x] = acc;
+            }
+        }
+
+        // Vertical pass
+        for y in 0..size {
+            for x in 0..size {
+                let mut acc = 0.0f32;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    let sy = (y as i32 + ki as i32 - radius as i32).clamp(0, size as i32 - 1) as usize;
+                    acc += tmp[sy * size + x] * kv;
+                }
+                data[y * size + x] = acc;
+            }
+        }
+    }
+
+    fn percentile_normalize(&self, data: &mut Vec<f32>) {
+        let mut sorted = data.clone();
+        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = sorted.len();
+
+        let lo = sorted[((self.percentile_low  / 100.0) * (n - 1) as f32) as usize];
+        let hi = sorted[((self.percentile_high / 100.0) * (n - 1) as f32).min((n - 1) as f32) as usize];
+        let range = (hi - lo).max(1e-10);
+
+        for v in data.iter_mut() {
+            *v = ((*v - lo) / range).clamp(0.0, 1.0);
+        }
     }
 
     fn erode(&self, data: &mut Vec<f32>, size: usize) {

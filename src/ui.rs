@@ -295,6 +295,43 @@ impl eframe::App for HeightmapApp {
                 ui.add_space(8.0);
                 ui.separator();
 
+                // ── Gaussian blur ──
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut self.blur_enabled, "Gaussian blur").changed() {
+                        self.dirty = true;
+                    }
+                });
+                if self.blur_enabled {
+                    ui.label("Sigma");
+                    if ui.add(egui::Slider::new(&mut self.blur_sigma, 0.3..=10.0).logarithmic(true)).changed() {
+                        self.dirty = true;
+                    }
+                    let radius = (self.blur_sigma * 3.0).ceil() as u32;
+                    ui.weak(format!("Kernel {}×{}", radius * 2 + 1, radius * 2 + 1));
+                }
+
+                ui.add_space(4.0);
+
+                // ── Percentile normalize ──
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut self.percentile_enabled, "Normalizar por percentil").changed() {
+                        self.dirty = true;
+                    }
+                });
+                if self.percentile_enabled {
+                    ui.label("Percentil bajo (recorte oscuro)");
+                    if ui.add(egui::Slider::new(&mut self.percentile_low, 0.0..=49.0).suffix("%")).changed() {
+                        self.dirty = true;
+                    }
+                    ui.label("Percentil alto (recorte claro)");
+                    if ui.add(egui::Slider::new(&mut self.percentile_high, 51.0..=100.0).suffix("%")).changed() {
+                        self.dirty = true;
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+
                 // ── Post-process ──
                 ui.label("Post-process");
                 egui::ComboBox::from_id_salt("post_process")

@@ -27,12 +27,14 @@ src/
 Cada vez que un parámetro cambia, `generate()` ejecuta este pipeline en orden:
 
 ```
-1. Noise sampling      — muestreo del ruido base (con domain warp opcional)
-2. Layer blending      — mezcla de capas adicionales
-3. Normalize           — normaliza el resultado a [0, 1]
-4. Falloff map         — multiplica por un gradiente de isla (opcional)
-5. Hydraulic erosion   — simulación de partículas de agua (opcional)
-6. Post-process        — operación final sobre los valores normalizados
+1. Noise sampling        — muestreo del ruido base (con domain warp opcional)
+2. Layer blending        — mezcla de capas adicionales
+3. Normalize             — normaliza el resultado a [0, 1]
+4. Falloff map           — multiplica por un gradiente de isla (opcional)
+5. Hydraulic erosion     — simulación de partículas de agua (opcional)
+6. Gaussian blur         — suavizado gaussiano separable (opcional)
+7. Percentile normalize  — recorta outliers y renormaliza (opcional)
+8. Post-process          — operación final sobre los valores normalizados
 ```
 
 ---
@@ -201,6 +203,37 @@ Al finalizar, el mapa se renormaliza a [0, 1].
 | Deposición | 0.01 – 1 | Fracción depositada cuando la gota va lenta. Alto = depósitos más bruscos. |
 | Velocidad de erosión | 0.01 – 1 | Agresividad del excavado. |
 | Evaporación | 0.001 – 0.1 | Tasa de pérdida de agua. Bajo = gotas más largas (ríos más largos). |
+
+---
+
+## Gaussian blur
+
+Suaviza el heightmap con un filtro gaussiano separable (dos pasadas 1D: horizontal + vertical). Útil para eliminar artefactos de la erosión o suavizar ruido de alta frecuencia antes de exportar.
+
+El kernel tiene radio `ceil(σ × 3)` píxeles, cubriendo el 99.7% del área de la distribución. La implementación separable es O(n × r) en lugar de O(n × r²).
+
+| Parámetro | Rango | Efecto |
+|-----------|-------|--------|
+| Sigma (σ) | 0.3 – 10.0 | Desviación estándar del kernel. Mayor σ = más desenfoque. El tamaño del kernel se muestra en tiempo real. |
+
+---
+
+## Normalizar por percentil
+
+Recorta los valores extremos del mapa y renormaliza el rango resultante a [0, 1]. Útil cuando la erosión, el domain warp o capas adicionales generan outliers que comprimen el rango visible.
+
+```
+lo  = valor en el percentil bajo   (ej. 2%)
+hi  = valor en el percentil alto   (ej. 98%)
+v'  = clamp((v - lo) / (hi - lo), 0, 1)
+```
+
+| Parámetro | Rango | Efecto |
+|-----------|-------|--------|
+| Percentil bajo | 0 – 49% | Elimina los píxeles más oscuros del rango. Sube el suelo efectivo. |
+| Percentil alto | 51 – 100% | Elimina los píxeles más claros del rango. Baja el techo efectivo. |
+
+Con los valores por defecto (2% / 98%) se descartan los extremos más ruidosos y el contraste del resto se maximiza.
 
 ---
 
