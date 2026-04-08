@@ -5,13 +5,12 @@ edition = "2021"
 description = "Procedural heightmap generator with egui GUI"
 
 [dependencies]
-eframe = "0.31"
+eframe = { version = "0.31", default-features = false, features = ["glow", "x11", "wayland"] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image"] }
 image = "0.25"
 noise = "0.9"
 rand = "0.8"
-rfd = "0.15"
 
 [profile.release]
 opt-level = 3
