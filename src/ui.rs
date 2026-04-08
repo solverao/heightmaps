@@ -1,10 +1,59 @@
-use egui::Vec2;
+use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use rand::Rng;
 use std::path::PathBuf;
 
 use crate::app::HeightmapApp;
 use crate::types::{BlendMode, ColorMode, FalloffShape, FractalType, NoiseType, PostProcess};
 use crate::view3d;
+
+const HIST_BINS: usize = 64;
+const HIST_W: f32 = 200.0;
+const HIST_H: f32 = 80.0;
+const HIST_PAD: f32 = 10.0;
+
+fn draw_histogram(data: &[f32], color_mode: ColorMode, painter: &egui::Painter, rect: Rect) {
+    if data.is_empty() { return; }
+
+    // Build bins
+    let mut bins = [0u32; HIST_BINS];
+    for &v in data {
+        let b = ((v * HIST_BINS as f32) as usize).min(HIST_BINS - 1);
+        bins[b] += 1;
+    }
+    let max_count = *bins.iter().max().unwrap_or(&1).max(&1) as f32;
+
+    // Position: bottom-right of the rect
+    let x0 = rect.right()  - HIST_W - HIST_PAD;
+    let y0 = rect.bottom() - HIST_H - HIST_PAD;
+    let bg = Rect::from_min_size(Pos2::new(x0 - 4.0, y0 - 4.0),
+                                  Vec2::new(HIST_W + 8.0, HIST_H + 8.0));
+
+    painter.rect_filled(bg, 4.0, Color32::from_black_alpha(160));
+    painter.rect_stroke(bg, 4.0, Stroke::new(1.0, Color32::from_white_alpha(30)), egui::StrokeKind::Middle);
+
+    let bin_w = HIST_W / HIST_BINS as f32;
+    for (i, &count) in bins.iter().enumerate() {
+        let t = i as f32 / (HIST_BINS - 1) as f32;
+        let bar_h = (count as f32 / max_count) * HIST_H;
+        let bx = x0 + i as f32 * bin_w;
+        let by = y0 + HIST_H - bar_h;
+
+        let base = color_mode.sample(t);
+        let col = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 210);
+        painter.rect_filled(
+            Rect::from_min_size(Pos2::new(bx, by), Vec2::new(bin_w.max(1.0), bar_h)),
+            0.0,
+            col,
+        );
+    }
+
+    // Axis labels
+    let font = egui::FontId::proportional(9.0);
+    let label_color = Color32::from_white_alpha(140);
+    painter.text(Pos2::new(x0, y0 - 1.0),       egui::Align2::LEFT_BOTTOM,  "0",   font.clone(), label_color);
+    painter.text(Pos2::new(x0 + HIST_W, y0 - 1.0), egui::Align2::RIGHT_BOTTOM, "1", font.clone(), label_color);
+    painter.text(Pos2::new(x0 - 3.0, y0),        egui::Align2::RIGHT_TOP,   "max", font.clone(), label_color);
+}
 
 impl eframe::App for HeightmapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -481,7 +530,12 @@ impl eframe::App for HeightmapApp {
 
                 ui.add_space(8.0);
                 ui.separator();
-                ui.label(format!("Gen time: {:.1} ms", self.last_gen_ms));
+                ui.horizontal(|ui| {
+                    ui.label(format!("Gen time: {:.1} ms", self.last_gen_ms));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.histogram_visible, "Histograma");
+                    });
+                });
                 }); // ScrollArea
             });
 
@@ -497,7 +551,6 @@ impl eframe::App for HeightmapApp {
                 }
                 let rect = ui.available_rect_before_wrap();
                 let painter = ui.painter_at(rect);
-                // Dark background
                 painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
                 view3d::draw(
                     &self.view3d_data,
@@ -508,13 +561,101 @@ impl eframe::App for HeightmapApp {
                     self.elevation_scale,
                     self.color_mode,
                 );
+                if self.histogram_visible && !self.heightmap_data.is_empty() {
+                    draw_histogram(&self.heightmap_data, self.color_mode, &painter, rect);
+                }
+                // Histogram toggle button (top-right)
+                let btn_rect = Rect::from_min_size(
+                    rect.right_top() + Vec2::new(-34.0, 8.0),
+                    Vec2::new(26.0, 16.0),
+                );
+                let btn_col = if self.histogram_visible {
+                    Color32::from_rgba_unmultiplied(80, 140, 220, 200)
+                } else {
+                    Color32::from_black_alpha(150)
+                };
+                painter.rect_filled(btn_rect, 3.0, btn_col);
+                painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "hist",
+                    egui::FontId::proportional(9.0), Color32::WHITE);
+                let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+                if btn_resp.clicked() { self.histogram_visible = !self.histogram_visible; }
+
                 ui.allocate_rect(rect, egui::Sense::hover());
             } else if let Some(tex) = &self.preview_texture {
-                let avail = ui.available_size();
-                let side = avail.x.min(avail.y);
-                ui.centered_and_justified(|ui| {
-                    ui.image(egui::load::SizedTexture::new(tex.id(), Vec2::splat(side)));
-                });
+                let rect = ui.available_rect_before_wrap();
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                let painter = ui.painter_at(rect);
+
+                // ── Scroll to zoom (centered on cursor) ──────────────────
+                let scroll = ctx.input(|i| i.smooth_scroll_delta.y);
+                if response.hovered() && scroll != 0.0 {
+                    let factor = (scroll * 0.002).exp();
+                    let cursor = ctx.input(|i| i.pointer.hover_pos())
+                        .unwrap_or(rect.center());
+                    // Zoom toward cursor: adjust pan so the point under the
+                    // cursor stays fixed.
+                    let before = (cursor - rect.center() - self.pan) / self.zoom;
+                    self.zoom = (self.zoom * factor).clamp(0.5, 20.0);
+                    self.pan  = cursor - rect.center() - before * self.zoom;
+                }
+
+                // ── Drag to pan ──────────────────────────────────────────
+                if response.dragged_by(egui::PointerButton::Primary) {
+                    self.pan += response.drag_delta();
+                }
+
+                // ── Double-click to reset ────────────────────────────────
+                if response.double_clicked() {
+                    self.zoom = 1.0;
+                    self.pan  = Vec2::ZERO;
+                }
+
+                // ── Draw image with zoom/pan transform ───────────────────
+                let base_side = rect.width().min(rect.height());
+                let side = base_side * self.zoom;
+                let center = rect.center() + self.pan;
+                let img_rect = Rect::from_center_size(center, Vec2::splat(side));
+                painter.image(tex.id(), img_rect, Rect::from_min_max(
+                    Pos2::ZERO, Pos2::new(1.0, 1.0),
+                ), Color32::WHITE);
+
+                // ── Zoom label ───────────────────────────────────────────
+                let zoom_label = format!("{:.0}%", self.zoom * 100.0);
+                painter.text(
+                    rect.left_bottom() + Vec2::new(8.0, -8.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    &zoom_label,
+                    egui::FontId::proportional(11.0),
+                    Color32::from_white_alpha(160),
+                );
+
+                // ── Histogram overlay ────────────────────────────────────
+                if self.histogram_visible && !self.heightmap_data.is_empty() {
+                    draw_histogram(&self.heightmap_data, self.color_mode, &painter, rect);
+                }
+
+                // ── Histogram toggle button (top-right) ──────────────────
+                let btn_rect = Rect::from_min_size(
+                    rect.right_top() + Vec2::new(-34.0, 8.0),
+                    Vec2::new(26.0, 16.0),
+                );
+                let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+                let btn_col = if self.histogram_visible {
+                    Color32::from_rgba_unmultiplied(80, 140, 220, 200)
+                } else {
+                    Color32::from_black_alpha(150)
+                };
+                painter.rect_filled(btn_rect, 3.0, btn_col);
+                painter.text(
+                    btn_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "hist",
+                    egui::FontId::proportional(9.0),
+                    Color32::WHITE,
+                );
+                if btn_resp.clicked() {
+                    self.histogram_visible = !self.histogram_visible;
+                }
             }
         });
     }

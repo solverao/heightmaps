@@ -213,6 +213,13 @@ pub struct HeightmapApp {
     pub export_status: Option<String>,
     pub normal_strength: f32,
 
+    // Histogram
+    pub histogram_visible: bool,
+
+    // 2D zoom / pan
+    pub zoom: f32,
+    pub pan: egui::Vec2,
+
     // Status
     pub last_gen_ms: f64,
 }
@@ -277,6 +284,9 @@ impl Default for HeightmapApp {
             export_path: default_export_path(),
             export_status: None,
             normal_strength: 8.0,
+            histogram_visible: true,
+            zoom: 1.0,
+            pan: egui::Vec2::ZERO,
             last_gen_ms: 0.0,
         }
     }
@@ -538,7 +548,9 @@ impl HeightmapApp {
         let tex = ctx.load_texture("heightmap_preview", img, TextureOptions::NEAREST);
         self.preview_texture = Some(tex);
         self.dirty = false;
-        self.view3d_dirty = true; // 3D data needs regenerating at its own res
+        self.view3d_dirty = true;
+        self.zoom = 1.0;
+        self.pan  = egui::Vec2::ZERO;
     }
 
     fn gaussian_blur(&self, data: &mut Vec<f32>, size: usize) {
