@@ -1,5 +1,5 @@
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions};
-use image::{GrayImage, Luma};
+use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
 use noise::{
     BasicMulti, Billow, Fbm, HybridMulti, MultiFractal, NoiseFn, OpenSimplex, Perlin, RidgedMulti,
     SuperSimplex, Value, Worley,
@@ -135,6 +135,7 @@ pub struct HeightmapApp {
     // Export
     pub export_path: String,
     pub export_status: Option<String>,
+    pub normal_strength: f32,
 
     // Status
     pub last_gen_ms: f64,
@@ -174,6 +175,7 @@ impl Default for HeightmapApp {
             dirty: true,
             export_path: default_export_path(),
             export_status: None,
+            normal_strength: 8.0,
             last_gen_ms: 0.0,
         }
     }
@@ -394,6 +396,50 @@ impl HeightmapApp {
         let img = GrayImage::from_fn(res, res, |x, y| {
             let v = data[(y * res + x) as usize];
             Luma([(v * 255.0) as u8])
+        });
+        img.save(&path).map_err(|e| format!("Error: {e}"))
+    }
+
+    pub fn export_png16(&mut self, path: PathBuf) -> Result<(), String> {
+        let res = self.export_resolution;
+        let data = self.generate(res);
+        let img: ImageBuffer<Luma<u16>, Vec<u16>> = ImageBuffer::from_fn(res, res, |x, y| {
+            let v = data[(y * res + x) as usize];
+            Luma([(v * 65535.0) as u16])
+        });
+        img.save(&path).map_err(|e| format!("Error: {e}"))
+    }
+
+    pub fn export_normal_png(&mut self, path: PathBuf) -> Result<(), String> {
+        let res = self.export_resolution;
+        let data = self.generate(res);
+        let strength = self.normal_strength as f64;
+
+        let get = |xi: i32, yi: i32| -> f64 {
+            let xi = xi.clamp(0, res as i32 - 1) as u32;
+            let yi = yi.clamp(0, res as i32 - 1) as u32;
+            data[(yi * res + xi) as usize] as f64
+        };
+
+        let img: RgbImage = ImageBuffer::from_fn(res, res, |x, y| {
+            let xi = x as i32;
+            let yi = y as i32;
+
+            // Sobel 3×3 gradient
+            let dx = (get(xi+1, yi-1) + 2.0*get(xi+1, yi) + get(xi+1, yi+1)
+                     - get(xi-1, yi-1) - 2.0*get(xi-1, yi) - get(xi-1, yi+1)) / 8.0;
+            let dy = (get(xi-1, yi+1) + 2.0*get(xi, yi+1) + get(xi+1, yi+1)
+                     - get(xi-1, yi-1) - 2.0*get(xi, yi-1) - get(xi+1, yi-1)) / 8.0;
+
+            let nx = -dx * strength;
+            let ny = -dy * strength;
+            let nz = 1.0_f64;
+            let len = (nx*nx + ny*ny + nz*nz).sqrt();
+
+            let r = ((nx / len + 1.0) * 0.5 * 255.0) as u8;
+            let g = ((ny / len + 1.0) * 0.5 * 255.0) as u8;
+            let b = ((nz / len + 1.0) * 0.5 * 255.0) as u8;
+            Rgb([r, g, b])
         });
         img.save(&path).map_err(|e| format!("Error: {e}"))
     }

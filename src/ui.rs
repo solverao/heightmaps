@@ -274,17 +274,41 @@ impl eframe::App for HeightmapApp {
                 ui.add(egui::Slider::new(&mut self.export_resolution, 256..=4096).suffix("px").logarithmic(true));
 
                 ui.add_space(4.0);
-                ui.label("Export path");
+                ui.label("Export path (base)");
                 ui.text_edit_singleline(&mut self.export_path);
 
                 ui.add_space(4.0);
-                if ui.button("💾 Export PNG (grayscale)").clicked() {
-                    let path = PathBuf::from(&self.export_path);
-                    self.export_status = Some(match self.export_png(path) {
-                        Ok(()) => format!("Guardado: {}", self.export_path),
-                        Err(e) => e,
-                    });
-                }
+                ui.label("Normal map strength");
+                ui.add(egui::Slider::new(&mut self.normal_strength, 1.0..=32.0));
+
+                ui.add_space(4.0);
+                // Derive sibling paths from the base path
+                let base = PathBuf::from(&self.export_path);
+                let stem = base.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                let dir  = base.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+
+                ui.horizontal(|ui| {
+                    if ui.button("💾 8-bit").on_hover_text(&self.export_path).clicked() {
+                        self.export_status = Some(match self.export_png(base.clone()) {
+                            Ok(()) => format!("Guardado 8-bit: {}", self.export_path),
+                            Err(e) => e,
+                        });
+                    }
+                    let path16 = dir.join(format!("{stem}_16.png"));
+                    if ui.button("💾 16-bit").on_hover_text(path16.display().to_string()).clicked() {
+                        self.export_status = Some(match self.export_png16(path16.clone()) {
+                            Ok(()) => format!("Guardado 16-bit: {}", path16.display()),
+                            Err(e) => e,
+                        });
+                    }
+                    let path_nm = dir.join(format!("{stem}_normal.png"));
+                    if ui.button("🗺 Normal map").on_hover_text(path_nm.display().to_string()).clicked() {
+                        self.export_status = Some(match self.export_normal_png(path_nm.clone()) {
+                            Ok(()) => format!("Guardado normal: {}", path_nm.display()),
+                            Err(e) => e,
+                        });
+                    }
+                });
 
                 if let Some(status) = &self.export_status {
                     ui.add_space(4.0);
