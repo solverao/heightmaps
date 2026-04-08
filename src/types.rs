@@ -191,6 +191,25 @@ impl BlendMode {
     }
 }
 
+// ── Falloff shape ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FalloffShape {
+    Circle,
+    Square,
+}
+
+impl FalloffShape {
+    pub const ALL: &'static [Self] = &[Self::Circle, Self::Square];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Circle => "Círculo",
+            Self::Square => "Cuadrado",
+        }
+    }
+}
+
 // ── Additional noise layer ──────────────────────────────────────────────────
 
 pub struct Layer {

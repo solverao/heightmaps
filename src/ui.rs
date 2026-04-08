@@ -3,7 +3,7 @@ use rand::Rng;
 use std::path::PathBuf;
 
 use crate::app::HeightmapApp;
-use crate::types::{BlendMode, ColorMode, FractalType, NoiseType, PostProcess};
+use crate::types::{BlendMode, ColorMode, FalloffShape, FractalType, NoiseType, PostProcess};
 
 impl eframe::App for HeightmapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -12,6 +12,7 @@ impl eframe::App for HeightmapApp {
             .min_width(280.0)
             .resizable(true)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("⛰ Heightmap Generator");
                 ui.separator();
 
@@ -42,9 +43,13 @@ impl eframe::App for HeightmapApp {
                 ui.add_space(8.0);
                 ui.separator();
 
-                // ── Domain warp ──
+                // ── Domain warp + Seamless ──
                 ui.horizontal(|ui| {
                     if ui.checkbox(&mut self.warp_enabled, "Domain warp").changed() {
+                        self.dirty = true;
+                    }
+                    ui.add_space(8.0);
+                    if ui.checkbox(&mut self.seamless_enabled, "Seamless").changed() {
                         self.dirty = true;
                     }
                 });
@@ -215,6 +220,34 @@ impl eframe::App for HeightmapApp {
                 ui.add_space(8.0);
                 ui.separator();
 
+                // ── Falloff map ──
+                if ui.checkbox(&mut self.falloff_enabled, "Falloff map (isla)").changed() {
+                    self.dirty = true;
+                }
+                if self.falloff_enabled {
+                    ui.label("Forma");
+                    egui::ComboBox::from_id_salt("falloff_shape")
+                        .selected_text(self.falloff_shape.label())
+                        .show_ui(ui, |ui| {
+                            for &s in FalloffShape::ALL {
+                                if ui.selectable_value(&mut self.falloff_shape, s, s.label()).changed() {
+                                    self.dirty = true;
+                                }
+                            }
+                        });
+                    ui.label("Radio interior (plano)");
+                    if ui.add(egui::Slider::new(&mut self.falloff_inner, 0.0..=1.0)).changed() {
+                        self.dirty = true;
+                    }
+                    ui.label("Radio exterior (borde)");
+                    if ui.add(egui::Slider::new(&mut self.falloff_outer, 0.0..=1.0)).changed() {
+                        self.dirty = true;
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+
                 // ── Preview settings ──
                 ui.label("Preview color");
                 egui::ComboBox::from_id_salt("color_mode")
@@ -261,6 +294,7 @@ impl eframe::App for HeightmapApp {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(format!("Gen time: {:.1} ms", self.last_gen_ms));
+                }); // ScrollArea
             });
 
         // Center: preview

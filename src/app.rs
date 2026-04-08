@@ -6,7 +6,7 @@ use noise::{
 };
 use std::path::PathBuf;
 
-use crate::types::{BlendMode, ColorMode, FractalType, Layer, NoiseType, PostProcess};
+use crate::types::{BlendMode, ColorMode, FalloffShape, FractalType, Layer, NoiseType, PostProcess};
 
 fn default_export_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -35,11 +35,11 @@ fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
 
     match fractal_type {
         FractalType::None => match noise_type {
-            NoiseType::Perlin      => { let n = Perlin::new(s);      Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::OpenSimplex => { let n = OpenSimplex::new(s); Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::SuperSimplex=> { let n = SuperSimplex::new(s);Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::Value       => { let n = Value::new(s);       Box::new(move |x, y| n.get([x * freq, y * freq])) }
-            NoiseType::Worley      => { let n = Worley::new(s);      Box::new(move |x, y| n.get([x * freq, y * freq])) }
+            NoiseType::Perlin       => { let n = Perlin::new(s);       Box::new(move |x, y| n.get([x * freq, y * freq])) }
+            NoiseType::OpenSimplex  => { let n = OpenSimplex::new(s);  Box::new(move |x, y| n.get([x * freq, y * freq])) }
+            NoiseType::SuperSimplex => { let n = SuperSimplex::new(s); Box::new(move |x, y| n.get([x * freq, y * freq])) }
+            NoiseType::Value        => { let n = Value::new(s);        Box::new(move |x, y| n.get([x * freq, y * freq])) }
+            NoiseType::Worley       => { let n = Worley::new(s);       Box::new(move |x, y| n.get([x * freq, y * freq])) }
         },
         FractalType::Fbm => {
             let n = Fbm::<Perlin>::new(s).set_octaves(octaves).set_frequency(freq)
@@ -69,6 +69,21 @@ fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
     }
 }
 
+// ── Seamless blend helper ───────────────────────────────────────────────────
+//
+// Samples `f` at (x,y), (x-1,y), (x,y-1), (x-1,y-1) and blends with
+// smoothstep weights, forcing perfect tileability in both axes.
+fn seamless_blend(f: &dyn Fn(f64, f64) -> f64, x: f64, y: f64) -> f64 {
+    let smooth = |t: f64| t * t * (3.0 - 2.0 * t);
+    let tx = smooth(x);
+    let ty = smooth(y);
+    let v00 = f(x,        y       );
+    let v10 = f(x - 1.0,  y       );
+    let v01 = f(x,        y - 1.0 );
+    let v11 = f(x - 1.0,  y - 1.0 );
+    v00 + (v10 - v00) * tx + (v01 - v00) * ty + (v00 - v10 - v01 + v11) * tx * ty
+}
+
 // ── Application state ───────────────────────────────────────────────────────
 
 pub struct HeightmapApp {
@@ -88,6 +103,9 @@ pub struct HeightmapApp {
     pub warp_strength: f64,
     pub warp_frequency: f64,
 
+    // Seamless tiling
+    pub seamless_enabled: bool,
+
     // Extra layers
     pub layers: [Layer; 2],
 
@@ -101,6 +119,12 @@ pub struct HeightmapApp {
     pub power_exp: f32,
     pub clamp_min: f32,
     pub clamp_max: f32,
+
+    // Falloff map
+    pub falloff_enabled: bool,
+    pub falloff_inner: f32,
+    pub falloff_outer: f32,
+    pub falloff_shape: FalloffShape,
 
     // Preview
     pub color_mode: ColorMode,
@@ -131,6 +155,7 @@ impl Default for HeightmapApp {
             warp_enabled: false,
             warp_strength: 0.3,
             warp_frequency: 2.0,
+            seamless_enabled: false,
             layers: [Layer::default(), Layer { seed_offset: 2, ..Layer::default() }],
             resolution: 256,
             export_resolution: 1024,
@@ -139,6 +164,10 @@ impl Default for HeightmapApp {
             power_exp: 2.0,
             clamp_min: 0.2,
             clamp_max: 0.8,
+            falloff_enabled: false,
+            falloff_inner: 0.3,
+            falloff_outer: 0.7,
+            falloff_shape: FalloffShape::Circle,
             color_mode: ColorMode::Grayscale,
             preview_texture: None,
             heightmap_data: Vec::new(),
@@ -174,9 +203,11 @@ impl HeightmapApp {
         let size = res as usize;
         let n_px = size * size;
 
-        // ── Warp samplers ───────────────────────────────────────────────────
+        let seamless     = self.seamless_enabled;
         let warp_enabled = self.warp_enabled;
         let warp_strength = self.warp_strength;
+
+        // ── Warp samplers ───────────────────────────────────────────────────
         let (warp_x, warp_y): (Option<Box<dyn Fn(f64,f64)->f64>>, Option<Box<dyn Fn(f64,f64)->f64>>) =
             if warp_enabled {
                 let wf = self.warp_frequency;
@@ -193,7 +224,6 @@ impl HeightmapApp {
         // ── Main + layer samplers ───────────────────────────────────────────
         let main_fn = build_sampler_from(self.main_sampler_params());
 
-        // Extract layer data before borrowing self further
         let base_seed = self.seed;
         let base_freq = self.frequency;
         let base_oct  = self.octaves as usize;
@@ -220,10 +250,25 @@ impl HeightmapApp {
             })
             .collect();
 
-        // ── Sample every pixel ──────────────────────────────────────────────
-        let mut main_raw = vec![0.0f64; n_px];
-        let mut main_min = f64::MAX;
-        let mut main_max = f64::MIN;
+        // ── Macro: sample fn at (px,py) after applying domain warp ─────────
+        // Using a macro avoids closure-capture lifetime issues while reusing logic.
+        macro_rules! warped {
+            ($f:expr, $px:expr, $py:expr) => {{
+                let (wx, wy) = match (&warp_x, &warp_y) {
+                    (Some(fx), Some(fy)) => (
+                        $px + fx($px, $py) * warp_strength,
+                        $py + fy($px, $py) * warp_strength,
+                    ),
+                    _ => ($px, $py),
+                };
+                $f(wx, wy)
+            }};
+        }
+
+        // ── Sample all pixels ───────────────────────────────────────────────
+        let mut main_raw  = vec![0.0f64; n_px];
+        let mut main_min  = f64::MAX;
+        let mut main_max  = f64::MIN;
 
         let n_active = active.len();
         let mut layer_raws: Vec<Vec<f64>> = (0..n_active).map(|_| vec![0.0f64; n_px]).collect();
@@ -234,23 +279,23 @@ impl HeightmapApp {
             for x in 0..size {
                 let nx = x as f64 / size as f64;
                 let ny = y as f64 / size as f64;
+                let i  = y * size + x;
 
-                let (wx, wy) = match (&warp_x, &warp_y) {
-                    (Some(fx), Some(fy)) => (
-                        nx + fx(nx, ny) * warp_strength,
-                        ny + fy(nx, ny) * warp_strength,
-                    ),
-                    _ => (nx, ny),
+                let v = if seamless {
+                    seamless_blend(&|px, py| warped!(&main_fn, px, py), nx, ny)
+                } else {
+                    warped!(&main_fn, nx, ny)
                 };
-
-                let i = y * size + x;
-                let v = main_fn(wx, wy);
                 main_raw[i] = v;
                 if v < main_min { main_min = v; }
                 if v > main_max { main_max = v; }
 
                 for (li, (_, _, sampler)) in active.iter().enumerate() {
-                    let lv = sampler(wx, wy);
+                    let lv = if seamless {
+                        seamless_blend(&|px, py| warped!(sampler, px, py), nx, ny)
+                    } else {
+                        warped!(sampler, nx, ny)
+                    };
                     layer_raws[li][i] = lv;
                     if lv < layer_mins[li] { layer_mins[li] = lv; }
                     if lv > layer_maxs[li] { layer_maxs[li] = lv; }
@@ -269,7 +314,7 @@ impl HeightmapApp {
             let range = (layer_maxs[li] - layer_mins[li]).max(1e-10);
             let w = *weight;
             for i in 0..n_px {
-                let lv = ((layer_raws[li][i] - layer_mins[li]) / range) as f32;
+                let lv   = ((layer_raws[li][i] - layer_mins[li]) / range) as f32;
                 let base = data[i];
                 data[i] = match blend_mode {
                     BlendMode::Add      => (base + lv * w).clamp(0.0, 1.0),
@@ -281,6 +326,26 @@ impl HeightmapApp {
                         base * (1.0 - w) + s * w
                     }
                 };
+            }
+        }
+
+        // ── Falloff map ─────────────────────────────────────────────────────
+        if self.falloff_enabled {
+            let inner = self.falloff_inner as f64;
+            let outer = self.falloff_outer as f64;
+            let shape = self.falloff_shape;
+            for y in 0..size {
+                for x in 0..size {
+                    let nx = x as f64 / size as f64 - 0.5; // -0.5..0.5
+                    let ny = y as f64 / size as f64 - 0.5;
+                    let dist = match shape {
+                        FalloffShape::Circle => (nx * nx + ny * ny).sqrt() * 2.0,
+                        FalloffShape::Square => nx.abs().max(ny.abs()) * 2.0,
+                    };
+                    let t = ((dist - inner) / (outer - inner).max(1e-6)).clamp(0.0, 1.0);
+                    let falloff = (1.0 - t * t * (3.0 - 2.0 * t)) as f32;
+                    data[y * size + x] *= falloff;
+                }
             }
         }
 
