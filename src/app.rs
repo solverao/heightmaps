@@ -4,10 +4,13 @@ use noise::{
     BasicMulti, Billow, Fbm, HybridMulti, MultiFractal, NoiseFn, OpenSimplex, Perlin, RidgedMulti,
     SuperSimplex, Value, Worley,
 };
+use rand::prelude::*;
 use rand::SeedableRng;
-use std::path::PathBuf;
+use std::path::PathBuf; // Para paralelismo
 
-use crate::types::{BlendMode, ColorMode, FalloffShape, FractalType, Layer, NoiseType, PostProcess};
+use crate::types::{
+    BlendMode, ColorMode, FalloffShape, FractalType, Layer, NoiseType, PostProcess,
+};
 
 fn default_export_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -30,41 +33,77 @@ struct SamplerParams {
 
 fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
     let SamplerParams {
-        seed: s, noise_type, fractal_type, frequency: freq,
-        octaves, lacunarity, persistence, offset_x, offset_y,
+        seed: s,
+        noise_type,
+        fractal_type,
+        frequency: freq,
+        octaves,
+        lacunarity,
+        persistence,
+        offset_x,
+        offset_y,
     } = p;
 
     match fractal_type {
         FractalType::None => match noise_type {
-            NoiseType::Perlin       => { let n = Perlin::new(s);       Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
-            NoiseType::OpenSimplex  => { let n = OpenSimplex::new(s);  Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
-            NoiseType::SuperSimplex => { let n = SuperSimplex::new(s); Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
-            NoiseType::Value        => { let n = Value::new(s);        Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
-            NoiseType::Worley       => { let n = Worley::new(s);       Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq])) }
+            NoiseType::Perlin => {
+                let n = Perlin::new(s);
+                Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq]))
+            }
+            NoiseType::OpenSimplex => {
+                let n = OpenSimplex::new(s);
+                Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq]))
+            }
+            NoiseType::SuperSimplex => {
+                let n = SuperSimplex::new(s);
+                Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq]))
+            }
+            NoiseType::Value => {
+                let n = Value::new(s);
+                Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq]))
+            }
+            NoiseType::Worley => {
+                let n = Worley::new(s);
+                Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq]))
+            }
         },
         FractalType::Fbm => {
-            let n = Fbm::<Perlin>::new(s).set_octaves(octaves).set_frequency(freq)
-                .set_lacunarity(lacunarity).set_persistence(persistence);
+            let n = Fbm::<Perlin>::new(s)
+                .set_octaves(octaves)
+                .set_frequency(freq)
+                .set_lacunarity(lacunarity)
+                .set_persistence(persistence);
             Box::new(move |x, y| n.get([x + offset_x, y + offset_y]))
         }
         FractalType::Billow => {
-            let n = Billow::<Perlin>::new(s).set_octaves(octaves).set_frequency(freq)
-                .set_lacunarity(lacunarity).set_persistence(persistence);
+            let n = Billow::<Perlin>::new(s)
+                .set_octaves(octaves)
+                .set_frequency(freq)
+                .set_lacunarity(lacunarity)
+                .set_persistence(persistence);
             Box::new(move |x, y| n.get([x + offset_x, y + offset_y]))
         }
         FractalType::RidgedMulti => {
-            let n = RidgedMulti::<Perlin>::new(s).set_octaves(octaves).set_frequency(freq)
+            let n = RidgedMulti::<Perlin>::new(s)
+                .set_octaves(octaves)
+                .set_frequency(freq)
                 .set_lacunarity(lacunarity);
             Box::new(move |x, y| n.get([x + offset_x, y + offset_y]))
         }
         FractalType::HybridMulti => {
-            let n = HybridMulti::<Perlin>::new(s).set_octaves(octaves).set_frequency(freq)
-                .set_lacunarity(lacunarity).set_persistence(persistence);
+            let n = HybridMulti::<Perlin>::new(s)
+                .set_octaves(octaves)
+                .set_frequency(freq)
+                .set_lacunarity(lacunarity)
+                .set_persistence(persistence);
             Box::new(move |x, y| n.get([x + offset_x, y + offset_y]))
         }
         FractalType::BasicMulti => {
-            let n = BasicMulti::<Perlin>::new(s).set_octaves(octaves).set_frequency(freq)
-                .set_lacunarity(lacunarity).set_persistence(persistence);
+            let n = BasicMulti::<Perlin>::new(s)
+                .set_octaves(octaves)
+                .set_frequency(freq)
+                .set_lacunarity(lacunarity)
+                .set_persistence(persistence);
             Box::new(move |x, y| n.get([x + offset_x, y + offset_y]))
         }
     }
@@ -72,43 +111,42 @@ fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
 
 // ── Hydraulic erosion helpers ───────────────────────────────────────────────
 
-fn hyd_sample(data: &[f32], n: usize, x: f32, y: f32) -> f32 {
-    let xi = (x.floor() as usize).min(n - 2);
-    let yi = (y.floor() as usize).min(n - 2);
-    let fx = x - xi as f32;
-    let fy = y - yi as f32;
-    let h00 = data[yi * n + xi];
-    let h10 = data[yi * n + xi + 1];
-    let h01 = data[(yi + 1) * n + xi];
-    let h11 = data[(yi + 1) * n + xi + 1];
-    h00 * (1.0 - fx) * (1.0 - fy) + h10 * fx * (1.0 - fy)
-        + h01 * (1.0 - fx) * fy   + h11 * fx * fy
-}
+// fn hyd_sample(data: &[f32], n: usize, x: f32, y: f32) -> f32 {
+//     let xi = (x.floor() as usize).min(n - 2);
+//     let yi = (y.floor() as usize).min(n - 2);
+//     let fx = x - xi as f32;
+//     let fy = y - yi as f32;
+//     let h00 = data[yi * n + xi];
+//     let h10 = data[yi * n + xi + 1];
+//     let h01 = data[(yi + 1) * n + xi];
+//     let h11 = data[(yi + 1) * n + xi + 1];
+//     h00 * (1.0 - fx) * (1.0 - fy) + h10 * fx * (1.0 - fy) + h01 * (1.0 - fx) * fy + h11 * fx * fy
+// }
 
-fn hyd_gradient(data: &[f32], n: usize, x: f32, y: f32) -> (f32, f32) {
-    let xi = (x.floor() as usize).min(n - 2);
-    let yi = (y.floor() as usize).min(n - 2);
-    let fx = x - xi as f32;
-    let fy = y - yi as f32;
-    let h00 = data[yi * n + xi];
-    let h10 = data[yi * n + xi + 1];
-    let h01 = data[(yi + 1) * n + xi];
-    let h11 = data[(yi + 1) * n + xi + 1];
-    let gx = (h10 - h00) * (1.0 - fy) + (h11 - h01) * fy;
-    let gy = (h01 - h00) * (1.0 - fx) + (h11 - h10) * fx;
-    (gx, gy)
-}
+// fn hyd_gradient(data: &[f32], n: usize, x: f32, y: f32) -> (f32, f32) {
+//     let xi = (x.floor() as usize).min(n - 2);
+//     let yi = (y.floor() as usize).min(n - 2);
+//     let fx = x - xi as f32;
+//     let fy = y - yi as f32;
+//     let h00 = data[yi * n + xi];
+//     let h10 = data[yi * n + xi + 1];
+//     let h01 = data[(yi + 1) * n + xi];
+//     let h11 = data[(yi + 1) * n + xi + 1];
+//     let gx = (h10 - h00) * (1.0 - fy) + (h11 - h01) * fy;
+//     let gy = (h01 - h00) * (1.0 - fx) + (h11 - h10) * fx;
+//     (gx, gy)
+// }
 
-fn hyd_deposit(data: &mut [f32], n: usize, x: f32, y: f32, amount: f32) {
-    let xi = (x.floor() as usize).min(n - 2);
-    let yi = (y.floor() as usize).min(n - 2);
-    let fx = x - xi as f32;
-    let fy = y - yi as f32;
-    data[yi * n + xi]         += amount * (1.0 - fx) * (1.0 - fy);
-    data[yi * n + xi + 1]     += amount * fx           * (1.0 - fy);
-    data[(yi + 1) * n + xi]   += amount * (1.0 - fx) * fy;
-    data[(yi + 1) * n + xi+1] += amount * fx           * fy;
-}
+// fn hyd_deposit(data: &mut [f32], n: usize, x: f32, y: f32, amount: f32) {
+//     let xi = (x.floor() as usize).min(n - 2);
+//     let yi = (y.floor() as usize).min(n - 2);
+//     let fx = x - xi as f32;
+//     let fy = y - yi as f32;
+//     data[yi * n + xi] += amount * (1.0 - fx) * (1.0 - fy);
+//     data[yi * n + xi + 1] += amount * fx * (1.0 - fy);
+//     data[(yi + 1) * n + xi] += amount * (1.0 - fx) * fy;
+//     data[(yi + 1) * n + xi + 1] += amount * fx * fy;
+// }
 
 // ── Seamless blend helper ───────────────────────────────────────────────────
 //
@@ -118,10 +156,10 @@ fn seamless_blend(f: &dyn Fn(f64, f64) -> f64, x: f64, y: f64) -> f64 {
     let smooth = |t: f64| t * t * (3.0 - 2.0 * t);
     let tx = smooth(x);
     let ty = smooth(y);
-    let v00 = f(x,        y       );
-    let v10 = f(x - 1.0,  y       );
-    let v01 = f(x,        y - 1.0 );
-    let v11 = f(x - 1.0,  y - 1.0 );
+    let v00 = f(x, y);
+    let v10 = f(x - 1.0, y);
+    let v01 = f(x, y - 1.0);
+    let v11 = f(x - 1.0, y - 1.0);
     v00 + (v10 - v00) * tx + (v01 - v00) * ty + (v00 - v10 - v01 + v11) * tx * ty
 }
 
@@ -172,9 +210,9 @@ pub struct HeightmapApp {
     pub falloff_inner: f32,
     pub falloff_outer: f32,
     pub falloff_shape: FalloffShape,
-    pub falloff_edge_noise: f32,   // 0 = perfecto, >0 = orilla irregular
-    pub falloff_noise_freq: f32,   // frecuencia del ruido de orilla
-    pub falloff_exponent: f32,     // <1 suave, >1 pronunciado
+    pub falloff_edge_noise: f32, // 0 = perfecto, >0 = orilla irregular
+    pub falloff_noise_freq: f32, // frecuencia del ruido de orilla
+    pub falloff_exponent: f32,   // <1 suave, >1 pronunciado
 
     // 3D view
     pub view_3d: bool,
@@ -244,7 +282,13 @@ impl Default for HeightmapApp {
             warp_strength: 0.3,
             warp_frequency: 2.0,
             seamless_enabled: false,
-            layers: [Layer::default(), Layer { seed_offset: 2, ..Layer::default() }],
+            layers: [
+                Layer::default(),
+                Layer {
+                    seed_offset: 2,
+                    ..Layer::default()
+                },
+            ],
             resolution: 256,
             export_resolution: 1024,
             post_process: PostProcess::None,
@@ -328,35 +372,39 @@ impl HeightmapApp {
         let size = res as usize;
         let n_px = size * size;
 
-        let seamless     = self.seamless_enabled;
+        let seamless = self.seamless_enabled;
         let warp_enabled = self.warp_enabled;
         let warp_strength = self.warp_strength;
 
         // ── Warp samplers ───────────────────────────────────────────────────
-        let (warp_x, warp_y): (Option<Box<dyn Fn(f64,f64)->f64>>, Option<Box<dyn Fn(f64,f64)->f64>>) =
-            if warp_enabled {
-                let wf = self.warp_frequency;
-                let nx = Fbm::<Perlin>::new(self.seed.wrapping_add(997)).set_frequency(wf);
-                let ny = Fbm::<Perlin>::new(self.seed.wrapping_add(1999)).set_frequency(wf);
-                (
-                    Some(Box::new(move |x, y| nx.get([x, y]))),
-                    Some(Box::new(move |x, y| ny.get([x, y]))),
-                )
-            } else {
-                (None, None)
-            };
+        let (warp_x, warp_y): (
+            Option<Box<dyn Fn(f64, f64) -> f64>>,
+            Option<Box<dyn Fn(f64, f64) -> f64>>,
+        ) = if warp_enabled {
+            let wf = self.warp_frequency;
+            let nx = Fbm::<Perlin>::new(self.seed.wrapping_add(997)).set_frequency(wf);
+            let ny = Fbm::<Perlin>::new(self.seed.wrapping_add(1999)).set_frequency(wf);
+            (
+                Some(Box::new(move |x, y| nx.get([x, y]))),
+                Some(Box::new(move |x, y| ny.get([x, y]))),
+            )
+        } else {
+            (None, None)
+        };
 
         // ── Main + layer samplers ───────────────────────────────────────────
-        let main_fn = build_sampler_from(self.main_sampler_params());
+        let main_fn = self.build_sampler();
 
         let base_seed = self.seed;
         let base_freq = self.frequency;
-        let base_oct  = self.octaves as usize;
-        let base_lac  = self.lacunarity;
-        let base_per  = self.persistence;
+        let base_oct = self.octaves as usize;
+        let base_lac = self.lacunarity;
+        let base_per = self.persistence;
         let (base_ox, base_oy) = self.effective_offset();
 
-        let active: Vec<(f32, BlendMode, Box<dyn Fn(f64,f64)->f64>)> = self.layers.iter()
+        let active: Vec<(f32, BlendMode, Box<dyn Fn(f64, f64) -> f64>)> = self
+            .layers
+            .iter()
             .filter(|l| l.enabled)
             .map(|l| {
                 let p = SamplerParams {
@@ -390,9 +438,9 @@ impl HeightmapApp {
         }
 
         // ── Sample all pixels ───────────────────────────────────────────────
-        let mut main_raw  = vec![0.0f64; n_px];
-        let mut main_min  = f64::MAX;
-        let mut main_max  = f64::MIN;
+        let mut main_raw = vec![0.0f64; n_px];
+        let mut main_min = f64::MAX;
+        let mut main_max = f64::MIN;
 
         let n_active = active.len();
         let mut layer_raws: Vec<Vec<f64>> = (0..n_active).map(|_| vec![0.0f64; n_px]).collect();
@@ -403,7 +451,7 @@ impl HeightmapApp {
             for x in 0..size {
                 let nx = x as f64 / size as f64;
                 let ny = y as f64 / size as f64;
-                let i  = y * size + x;
+                let i = y * size + x;
 
                 let v = if seamless {
                     seamless_blend(&|px, py| warped!(&main_fn, px, py), nx, ny)
@@ -411,8 +459,12 @@ impl HeightmapApp {
                     warped!(&main_fn, nx, ny)
                 };
                 main_raw[i] = v;
-                if v < main_min { main_min = v; }
-                if v > main_max { main_max = v; }
+                if v < main_min {
+                    main_min = v;
+                }
+                if v > main_max {
+                    main_max = v;
+                }
 
                 for (li, (_, _, sampler)) in active.iter().enumerate() {
                     let lv = if seamless {
@@ -421,15 +473,20 @@ impl HeightmapApp {
                         warped!(sampler, nx, ny)
                     };
                     layer_raws[li][i] = lv;
-                    if lv < layer_mins[li] { layer_mins[li] = lv; }
-                    if lv > layer_maxs[li] { layer_maxs[li] = lv; }
+                    if lv < layer_mins[li] {
+                        layer_mins[li] = lv;
+                    }
+                    if lv > layer_maxs[li] {
+                        layer_maxs[li] = lv;
+                    }
                 }
             }
         }
 
         // ── Normalize main to 0..1 ──────────────────────────────────────────
         let main_range = (main_max - main_min).max(1e-10);
-        let mut data: Vec<f32> = main_raw.iter()
+        let mut data: Vec<f32> = main_raw
+            .iter()
             .map(|&v| ((v - main_min) / main_range) as f32)
             .collect();
 
@@ -438,14 +495,14 @@ impl HeightmapApp {
             let range = (layer_maxs[li] - layer_mins[li]).max(1e-10);
             let w = *weight;
             for i in 0..n_px {
-                let lv   = ((layer_raws[li][i] - layer_mins[li]) / range) as f32;
+                let lv = ((layer_raws[li][i] - layer_mins[li]) / range) as f32;
                 let base = data[i];
                 data[i] = match blend_mode {
-                    BlendMode::Add      => (base + lv * w).clamp(0.0, 1.0),
+                    BlendMode::Add => (base + lv * w).clamp(0.0, 1.0),
                     BlendMode::Multiply => base * (1.0 - w + lv * w),
-                    BlendMode::Max      => base * (1.0 - w) + base.max(lv) * w,
-                    BlendMode::Min      => base * (1.0 - w) + base.min(lv) * w,
-                    BlendMode::Screen   => {
+                    BlendMode::Max => base * (1.0 - w) + base.max(lv) * w,
+                    BlendMode::Min => base * (1.0 - w) + base.min(lv) * w,
+                    BlendMode::Screen => {
                         let s = 1.0 - (1.0 - base) * (1.0 - lv);
                         base * (1.0 - w) + s * w
                     }
@@ -455,12 +512,12 @@ impl HeightmapApp {
 
         // ── Falloff map ─────────────────────────────────────────────────────
         if self.falloff_enabled {
-            let inner     = self.falloff_inner as f64;
-            let outer     = self.falloff_outer as f64;
-            let shape     = self.falloff_shape;
+            let inner = self.falloff_inner as f64;
+            let outer = self.falloff_outer as f64;
+            let shape = self.falloff_shape;
             let edge_noise = self.falloff_edge_noise as f64;
             let noise_freq = self.falloff_noise_freq as f64;
-            let exponent  = self.falloff_exponent as f64;
+            let exponent = self.falloff_exponent as f64;
 
             // Two independent Perlin instances warp the distance field,
             // breaking the perfect geometry and creating organic coastlines.
@@ -473,8 +530,10 @@ impl HeightmapApp {
                     let orig_ny = y as f64 / size as f64 - 0.5;
 
                     // Perturb coordinates with noise before measuring distance
-                    let nx = orig_nx + warp_x.get([orig_nx * noise_freq, orig_ny * noise_freq]) * edge_noise;
-                    let ny = orig_ny + warp_y.get([orig_nx * noise_freq, orig_ny * noise_freq]) * edge_noise;
+                    let nx = orig_nx
+                        + warp_x.get([orig_nx * noise_freq, orig_ny * noise_freq]) * edge_noise;
+                    let ny = orig_ny
+                        + warp_y.get([orig_nx * noise_freq, orig_ny * noise_freq]) * edge_noise;
 
                     let dist = match shape {
                         FalloffShape::Circle => (nx * nx + ny * ny).sqrt() * 2.0,
@@ -492,7 +551,8 @@ impl HeightmapApp {
 
         // ── Hydraulic erosion ───────────────────────────────────────────────
         if self.erosion_enabled {
-            self.erode(&mut data, size);
+            // self.erode(&mut data, size);
+            self.perform_erosion(&mut data, size);
         }
 
         // ── Gaussian blur ────────────────────────────────────────────────────
@@ -508,15 +568,15 @@ impl HeightmapApp {
         // ── Post-process ────────────────────────────────────────────────────
         for v in data.iter_mut() {
             *v = match self.post_process {
-                PostProcess::None    => *v,
+                PostProcess::None => *v,
                 PostProcess::Terrace => {
                     let levels = self.terrace_levels.max(2) as f32;
                     (*v * levels).floor() / (levels - 1.0)
                 }
-                PostProcess::Power   => v.powf(self.power_exp),
-                PostProcess::Invert  => 1.0 - *v,
-                PostProcess::Abs     => ((*v - 0.5) * 2.0).abs(),
-                PostProcess::Clamp   => {
+                PostProcess::Power => v.powf(self.power_exp),
+                PostProcess::Invert => 1.0 - *v,
+                PostProcess::Abs => ((*v - 0.5) * 2.0).abs(),
+                PostProcess::Clamp => {
                     let lo = self.clamp_min;
                     let hi = self.clamp_max.max(lo + 0.01);
                     ((*v).clamp(lo, hi) - lo) / (hi - lo)
@@ -540,17 +600,22 @@ impl HeightmapApp {
         self.last_gen_ms = start.elapsed().as_secs_f64() * 1000.0;
 
         let size = res as usize;
-        let pixels: Vec<Color32> = self.heightmap_data.iter()
+        let pixels: Vec<Color32> = self
+            .heightmap_data
+            .iter()
             .map(|&v| self.color_mode.sample(v))
             .collect();
 
-        let img = ColorImage { size: [size, size], pixels };
+        let img = ColorImage {
+            size: [size, size],
+            pixels,
+        };
         let tex = ctx.load_texture("heightmap_preview", img, TextureOptions::NEAREST);
         self.preview_texture = Some(tex);
         self.dirty = false;
         self.view3d_dirty = true;
         self.zoom = 1.0;
-        self.pan  = egui::Vec2::ZERO;
+        self.pan = egui::Vec2::ZERO;
     }
 
     fn gaussian_blur(&self, data: &mut Vec<f32>, size: usize) {
@@ -559,10 +624,12 @@ impl HeightmapApp {
         let kernel_size = radius * 2 + 1;
 
         // Build 1D Gaussian kernel
-        let mut kernel: Vec<f32> = (0..kernel_size).map(|i| {
-            let x = i as f32 - radius as f32;
-            (-x * x / (2.0 * sigma * sigma)).exp()
-        }).collect();
+        let mut kernel: Vec<f32> = (0..kernel_size)
+            .map(|i| {
+                let x = i as f32 - radius as f32;
+                (-x * x / (2.0 * sigma * sigma)).exp()
+            })
+            .collect();
         let sum: f32 = kernel.iter().sum();
         kernel.iter_mut().for_each(|k| *k /= sum);
 
@@ -573,7 +640,8 @@ impl HeightmapApp {
             for x in 0..size {
                 let mut acc = 0.0f32;
                 for (ki, &kv) in kernel.iter().enumerate() {
-                    let sx = (x as i32 + ki as i32 - radius as i32).clamp(0, size as i32 - 1) as usize;
+                    let sx =
+                        (x as i32 + ki as i32 - radius as i32).clamp(0, size as i32 - 1) as usize;
                     acc += data[y * size + sx] * kv;
                 }
                 tmp[y * size + x] = acc;
@@ -585,7 +653,8 @@ impl HeightmapApp {
             for x in 0..size {
                 let mut acc = 0.0f32;
                 for (ki, &kv) in kernel.iter().enumerate() {
-                    let sy = (y as i32 + ki as i32 - radius as i32).clamp(0, size as i32 - 1) as usize;
+                    let sy =
+                        (y as i32 + ki as i32 - radius as i32).clamp(0, size as i32 - 1) as usize;
                     acc += tmp[sy * size + x] * kv;
                 }
                 data[y * size + x] = acc;
@@ -598,8 +667,9 @@ impl HeightmapApp {
         sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let n = sorted.len();
 
-        let lo = sorted[((self.percentile_low  / 100.0) * (n - 1) as f32) as usize];
-        let hi = sorted[((self.percentile_high / 100.0) * (n - 1) as f32).min((n - 1) as f32) as usize];
+        let lo = sorted[((self.percentile_low / 100.0) * (n - 1) as f32) as usize];
+        let hi =
+            sorted[((self.percentile_high / 100.0) * (n - 1) as f32).min((n - 1) as f32) as usize];
         let range = (hi - lo).max(1e-10);
 
         for v in data.iter_mut() {
@@ -607,80 +677,172 @@ impl HeightmapApp {
         }
     }
 
-    fn erode(&self, data: &mut Vec<f32>, size: usize) {
-        use rand::Rng;
-        let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed as u64 ^ 0xDEAD_BEEF);
+    // fn erode(&self, data: &mut Vec<f32>, size: usize) {
+    //     use rand::Rng;
+    //     let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed as u64 ^ 0xDEAD_BEEF);
 
-        let n          = size;
-        let inertia    = self.erosion_inertia;
-        let capacity   = self.erosion_capacity;
-        let deposit_k  = self.erosion_deposition;
-        let erode_k    = self.erosion_erosion_speed;
-        let evaporate  = self.erosion_evaporation;
-        let gravity    = 10.0_f32;
-        let max_steps  = 64_usize;
-        let min_slope  = 0.001_f32;
+    //     let n          = size;
+    //     let inertia    = self.erosion_inertia;
+    //     let capacity   = self.erosion_capacity;
+    //     let deposit_k  = self.erosion_deposition;
+    //     let erode_k    = self.erosion_erosion_speed;
+    //     let evaporate  = self.erosion_evaporation;
+    //     let gravity    = 10.0_f32;
+    //     let max_steps  = 64_usize;
+    //     let min_slope  = 0.001_f32;
+
+    //     for _ in 0..self.erosion_droplets {
+    //         // Random start in pixel space, away from borders
+    //         let mut x = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
+    //         let mut y = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
+    //         let mut dir_x   = 0.0_f32;
+    //         let mut dir_y   = 0.0_f32;
+    //         let mut speed   = 1.0_f32;
+    //         let mut water   = 1.0_f32;
+    //         let mut sediment = 0.0_f32;
+
+    //         for _ in 0..max_steps {
+    //             // Gradient at current position
+    //             let (gx, gy) = hyd_gradient(data, n, x, y);
+
+    //             // Update direction with inertia
+    //             dir_x = dir_x * inertia - gx * (1.0 - inertia);
+    //             dir_y = dir_y * inertia - gy * (1.0 - inertia);
+    //             let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1e-6);
+    //             dir_x /= len;
+    //             dir_y /= len;
+
+    //             let nx = x + dir_x;
+    //             let ny = y + dir_y;
+
+    //             // Stop if out of bounds
+    //             if nx < 0.5 || nx >= (n - 1) as f32 - 0.5
+    //                 || ny < 0.5 || ny >= (n - 1) as f32 - 0.5 {
+    //                 break;
+    //             }
+
+    //             let h_old = hyd_sample(data, n, x, y);
+    //             let h_new = hyd_sample(data, n, nx, ny);
+    //             let delta_h = h_new - h_old;
+
+    //             // Sediment capacity proportional to speed, water, and slope
+    //             let c = (-delta_h).max(min_slope) * speed * water * capacity;
+
+    //             if sediment > c || delta_h > 0.0 {
+    //                 // Deposit: fill uphill gaps fully, otherwise deposit fraction
+    //                 let deposit = if delta_h > 0.0 {
+    //                     delta_h.min(sediment)
+    //                 } else {
+    //                     (sediment - c) * deposit_k
+    //                 };
+    //                 sediment -= deposit;
+    //                 hyd_deposit(data, n, x, y, deposit);
+    //             } else {
+    //                 // Erode: remove sediment from current cell
+    //                 let amount = ((c - sediment) * erode_k).min(-delta_h.max(0.0) + 0.01);
+    //                 let amount = amount.max(0.0);
+    //                 sediment  += amount;
+    //                 hyd_deposit(data, n, x, y, -amount);
+    //             }
+
+    //             speed = (speed * speed + delta_h.abs() * gravity).sqrt().max(0.01);
+    //             water *= 1.0 - evaporate;
+    //             x = nx;
+    //             y = ny;
+
+    //             if water < 0.001 { break; }
+    //         }
+    //     }
+
+    //     // Re-normalize to 0..1 after erosion shifts the range
+    //     let min = data.iter().cloned().fold(f32::MAX, f32::min);
+    //     let max = data.iter().cloned().fold(f32::MIN, f32::max);
+    //     let range = (max - min).max(1e-10);
+    //     for v in data.iter_mut() {
+    //         *v = (*v - min) / range;
+    //     }
+    // }
+
+    fn perform_erosion(&self, data: &mut Vec<f32>, size: usize) {
+        let n = size;
+        let inertia = self.erosion_inertia;
+        let capacity = self.erosion_capacity;
+        let deposit_k = self.erosion_deposition;
+        let erode_k = self.erosion_erosion_speed;
+        let evaporate = self.erosion_evaporation;
+        let gravity = 10.0_f32;
+        let max_steps = 64_usize;
+        let min_slope = 0.001_f32;
+
+        // 1. Usar un PRNG más rápido como XorShift o SmallRng si no necesitas seguridad criptográfica
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(self.seed as u64);
+
+        // 2. Ejecutar gotas en paralelo (opcional, requiere que 'data' use Atomics o un Mutex por zona,
+        // pero lo más simple es procesar por lotes o usar una estructura de datos concurrente)
 
         for _ in 0..self.erosion_droplets {
-            // Random start in pixel space, away from borders
             let mut x = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
             let mut y = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
-            let mut dir_x   = 0.0_f32;
-            let mut dir_y   = 0.0_f32;
-            let mut speed   = 1.0_f32;
-            let mut water   = 1.0_f32;
-            let mut sediment = 0.0_f32;
+            let mut dir_x = 0.0;
+            let mut dir_y = 0.0;
+            let mut speed = 1.0;
+            let mut water = 1.0;
+            let mut sediment = 0.0;
 
             for _ in 0..max_steps {
-                // Gradient at current position
-                let (gx, gy) = hyd_gradient(data, n, x, y);
+                // Optimización: Calcular gradiente y altura en un solo paso (Bilineal)
+                let (gx, gy, h_old) = self.get_gradient_and_height(data, n, x, y);
 
-                // Update direction with inertia
+                // Inercia
                 dir_x = dir_x * inertia - gx * (1.0 - inertia);
                 dir_y = dir_y * inertia - gy * (1.0 - inertia);
-                let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1e-6);
-                dir_x /= len;
-                dir_y /= len;
+
+                let len_sq = dir_x * dir_x + dir_y * dir_y;
+                if len_sq > 0.0 {
+                    let len = len_sq.sqrt();
+                    dir_x /= len;
+                    dir_y /= len;
+                }
 
                 let nx = x + dir_x;
                 let ny = y + dir_y;
 
-                // Stop if out of bounds
-                if nx < 0.5 || nx >= (n - 1) as f32 - 0.5
-                    || ny < 0.5 || ny >= (n - 1) as f32 - 0.5 {
+                // Salida de límites
+                if nx < 1.0 || nx >= (n - 2) as f32 || ny < 1.0 || ny >= (n - 2) as f32 {
                     break;
                 }
 
-                let h_old = hyd_sample(data, n, x, y);
-                let h_new = hyd_sample(data, n, nx, ny);
+                let (_, _, h_new) = self.get_gradient_and_height(data, n, nx, ny);
                 let delta_h = h_new - h_old;
 
-                // Sediment capacity proportional to speed, water, and slope
+                // Capacidad de sedimento
                 let c = (-delta_h).max(min_slope) * speed * water * capacity;
 
                 if sediment > c || delta_h > 0.0 {
-                    // Deposit: fill uphill gaps fully, otherwise deposit fraction
                     let deposit = if delta_h > 0.0 {
                         delta_h.min(sediment)
                     } else {
                         (sediment - c) * deposit_k
                     };
                     sediment -= deposit;
-                    hyd_deposit(data, n, x, y, deposit);
+                    self.hyd_deposit_bilinear(data, n, x, y, deposit);
                 } else {
-                    // Erode: remove sediment from current cell
-                    let amount = ((c - sediment) * erode_k).min(-delta_h.max(0.0) + 0.01);
+                    let amount = ((c - sediment) * erode_k).min(-delta_h);
                     let amount = amount.max(0.0);
-                    sediment  += amount;
-                    hyd_deposit(data, n, x, y, -amount);
+                    sediment += amount;
+                    // Erosión distribuida bilinealmente para evitar artefactos de "picos"
+                    self.hyd_deposit_bilinear(data, n, x, y, -amount);
                 }
 
-                speed = (speed * speed + delta_h.abs() * gravity).sqrt().max(0.01);
+                // Actualizar física
+                speed = (speed * speed + delta_h.abs() * gravity).sqrt();
                 water *= 1.0 - evaporate;
                 x = nx;
                 y = ny;
 
-                if water < 0.001 { break; }
+                if water < 0.01 {
+                    break;
+                }
             }
         }
 
@@ -691,6 +853,51 @@ impl HeightmapApp {
         for v in data.iter_mut() {
             *v = (*v - min) / range;
         }
+    }
+
+    fn hyd_deposit_bilinear(&self, data: &mut Vec<f32>, n: usize, x: f32, y: f32, amount: f32) {
+        let xi = (x as usize).min(n - 2); // Protegemos el (xi + 1)
+        let yi = (y as usize).min(n - 2); // Protegemos el (yi + 1)
+        let u = x - x.floor();
+        let v = y - y.floor();
+
+        let w00 = (1.0 - u) * (1.0 - v);
+        let w10 = u * (1.0 - v);
+        let w01 = (1.0 - u) * v;
+        let w11 = u * v;
+
+        data[yi * n + xi] += amount * w00;
+        data[yi * n + xi + 1] += amount * w10;
+        data[(yi + 1) * n + xi] += amount * w01;
+        data[(yi + 1) * n + xi + 1] += amount * w11;
+    }
+
+    fn get_gradient_and_height(&self, data: &[f32], n: usize, x: f32, y: f32) -> (f32, f32, f32) {
+        let xi = x as usize;
+        let yi = y as usize;
+        let u = x - xi as f32;
+        let v = y - yi as f32;
+
+        // Índices de los 4 vecinos
+        let idx00 = yi * n + xi;
+        let idx10 = idx00 + 1;
+        let idx01 = (yi + 1) * n + xi;
+        let idx11 = idx01 + 1;
+
+        let h00 = data[idx00];
+        let h10 = data[idx10];
+        let h01 = data[idx01];
+        let h11 = data[idx11];
+
+        // Gradiente (derivadas parciales aproximadas)
+        let gx = (h10 - h00) * (1.0 - v) + (h11 - h01) * v;
+        let gy = (h01 - h00) * (1.0 - u) + (h11 - h10) * u;
+
+        // Altura interpolada (bilineal)
+        let height =
+            h00 * (1.0 - u) * (1.0 - v) + h10 * u * (1.0 - v) + h01 * (1.0 - u) * v + h11 * u * v;
+
+        (gx, gy, height)
     }
 
     pub fn export_png(&mut self, path: PathBuf) -> Result<(), String> {
@@ -729,15 +936,21 @@ impl HeightmapApp {
             let yi = y as i32;
 
             // Sobel 3×3 gradient
-            let dx = (get(xi+1, yi-1) + 2.0*get(xi+1, yi) + get(xi+1, yi+1)
-                     - get(xi-1, yi-1) - 2.0*get(xi-1, yi) - get(xi-1, yi+1)) / 8.0;
-            let dy = (get(xi-1, yi+1) + 2.0*get(xi, yi+1) + get(xi+1, yi+1)
-                     - get(xi-1, yi-1) - 2.0*get(xi, yi-1) - get(xi+1, yi-1)) / 8.0;
+            let dx = (get(xi + 1, yi - 1) + 2.0 * get(xi + 1, yi) + get(xi + 1, yi + 1)
+                - get(xi - 1, yi - 1)
+                - 2.0 * get(xi - 1, yi)
+                - get(xi - 1, yi + 1))
+                / 8.0;
+            let dy = (get(xi - 1, yi + 1) + 2.0 * get(xi, yi + 1) + get(xi + 1, yi + 1)
+                - get(xi - 1, yi - 1)
+                - 2.0 * get(xi, yi - 1)
+                - get(xi + 1, yi - 1))
+                / 8.0;
 
             let nx = -dx * strength;
             let ny = -dy * strength;
             let nz = 1.0_f64;
-            let len = (nx*nx + ny*ny + nz*nz).sqrt();
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
 
             let r = ((nx / len + 1.0) * 0.5 * 255.0) as u8;
             let g = ((ny / len + 1.0) * 0.5 * 255.0) as u8;

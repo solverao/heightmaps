@@ -10,7 +10,8 @@ egui = "0.31"
 egui_extras = { version = "0.31", features = ["image"] }
 image = "0.25"
 noise = "0.9"
-rand = "0.8"
+rayon = "1"
+rand = { version = "0.8", features = ["small_rng"] }
 
 [profile.release]
 opt-level = 3

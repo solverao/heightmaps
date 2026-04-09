@@ -129,26 +129,62 @@ impl ColorMode {
             Self::Terrain => {
                 // deep water → shallow → sand → grass → rock → snow
                 if t < 0.30 {
-                    lerp_color(Color32::from_rgb(20, 40, 120), Color32::from_rgb(50, 100, 200), t / 0.30)
+                    lerp_color(
+                        Color32::from_rgb(20, 40, 120),
+                        Color32::from_rgb(50, 100, 200),
+                        t / 0.30,
+                    )
                 } else if t < 0.40 {
-                    lerp_color(Color32::from_rgb(50, 100, 200), Color32::from_rgb(210, 200, 150), (t - 0.30) / 0.10)
+                    lerp_color(
+                        Color32::from_rgb(50, 100, 200),
+                        Color32::from_rgb(210, 200, 150),
+                        (t - 0.30) / 0.10,
+                    )
                 } else if t < 0.60 {
-                    lerp_color(Color32::from_rgb(60, 160, 50), Color32::from_rgb(30, 100, 30), (t - 0.40) / 0.20)
+                    lerp_color(
+                        Color32::from_rgb(60, 160, 50),
+                        Color32::from_rgb(30, 100, 30),
+                        (t - 0.40) / 0.20,
+                    )
                 } else if t < 0.80 {
-                    lerp_color(Color32::from_rgb(100, 80, 60), Color32::from_rgb(140, 130, 120), (t - 0.60) / 0.20)
+                    lerp_color(
+                        Color32::from_rgb(100, 80, 60),
+                        Color32::from_rgb(140, 130, 120),
+                        (t - 0.60) / 0.20,
+                    )
                 } else {
-                    lerp_color(Color32::from_rgb(180, 180, 180), Color32::from_rgb(255, 255, 255), (t - 0.80) / 0.20)
+                    lerp_color(
+                        Color32::from_rgb(180, 180, 180),
+                        Color32::from_rgb(255, 255, 255),
+                        (t - 0.80) / 0.20,
+                    )
                 }
             }
             Self::Heatmap => {
                 if t < 0.25 {
-                    lerp_color(Color32::from_rgb(0, 0, 80), Color32::from_rgb(0, 80, 255), t / 0.25)
+                    lerp_color(
+                        Color32::from_rgb(0, 0, 80),
+                        Color32::from_rgb(0, 80, 255),
+                        t / 0.25,
+                    )
                 } else if t < 0.50 {
-                    lerp_color(Color32::from_rgb(0, 200, 100), Color32::from_rgb(255, 255, 0), (t - 0.25) / 0.25)
+                    lerp_color(
+                        Color32::from_rgb(0, 200, 100),
+                        Color32::from_rgb(255, 255, 0),
+                        (t - 0.25) / 0.25,
+                    )
                 } else if t < 0.75 {
-                    lerp_color(Color32::from_rgb(255, 200, 0), Color32::from_rgb(255, 60, 0), (t - 0.50) / 0.25)
+                    lerp_color(
+                        Color32::from_rgb(255, 200, 0),
+                        Color32::from_rgb(255, 60, 0),
+                        (t - 0.50) / 0.25,
+                    )
                 } else {
-                    lerp_color(Color32::from_rgb(255, 60, 0), Color32::from_rgb(255, 255, 255), (t - 0.75) / 0.25)
+                    lerp_color(
+                        Color32::from_rgb(255, 60, 0),
+                        Color32::from_rgb(255, 255, 255),
+                        (t - 0.75) / 0.25,
+                    )
                 }
             }
         }
@@ -182,11 +218,11 @@ impl BlendMode {
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Add      => "Add",
+            Self::Add => "Add",
             Self::Multiply => "Multiply",
-            Self::Max      => "Max",
-            Self::Min      => "Min",
-            Self::Screen   => "Screen",
+            Self::Max => "Max",
+            Self::Min => "Min",
+            Self::Screen => "Screen",
         }
     }
 }
