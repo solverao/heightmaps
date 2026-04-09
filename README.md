@@ -32,9 +32,10 @@ Cada vez que un parámetro cambia, `generate()` ejecuta este pipeline en orden:
 3. Normalize             — normaliza el resultado a [0, 1]
 4. Falloff map           — multiplica por un gradiente de isla (opcional)
 5. Hydraulic erosion     — simulación de partículas de agua (opcional)
-6. Gaussian blur         — suavizado gaussiano separable (opcional)
-7. Percentile normalize  — recorta outliers y renormaliza (opcional)
-8. Post-process          — operación final sobre los valores normalizados
+6. Thermal erosion       — derrumbe de pendientes por talud de reposo (opcional)
+7. Gaussian blur         — suavizado gaussiano separable (opcional)
+8. Percentile normalize  — recorta outliers y renormaliza (opcional)
+9. Post-process          — operación final sobre los valores normalizados
 ```
 
 ---
@@ -206,6 +207,32 @@ Al finalizar, el mapa se renormaliza a [0, 1].
 
 ---
 
+## Erosión térmica
+
+Simula el **talud de reposo**: el ángulo máximo de estabilidad de una pendiente. El material que supera ese ángulo se derrumba hacia las celdas vecinas. Produce acantilados con base suavizada, mesetas bien definidas y un aspecto geológico más realista que la erosión hidráulica sola.
+
+### Algoritmo (talud de reposo)
+
+En cada iteración, para cada celda `(x, y)`:
+
+1. Calcula la diferencia de altura `Δh` con cada vecino en 4 direcciones.
+2. Si `Δh > talud`, la pendiente es inestable.
+3. Mueve `(Δh − talud) × fuerza × 0.5` de material hacia el vecino, distribuido proporcionalmente entre todos los vecinos inestables.
+
+Se repite `iteraciones` veces. Al finalizar se renormaliza a [0, 1].
+
+> Combinar erosión hidráulica (canales y valles) seguida de erosión térmica (suavizado de pendientes) produce resultados muy naturales.
+
+### Parámetros
+
+| Parámetro | Rango | Efecto |
+|-----------|-------|--------|
+| Talud | 0.01 – 0.5 | Ángulo de reposo. Bajo = terreno muy suave (dunas). Alto = solo aplana pendientes extremas (acantilados). |
+| Iteraciones | 1 – 100 | Más iteraciones = efecto más pronunciado. 20–40 es un buen punto de partida. |
+| Fuerza | 0.01 – 1.0 | Fracción de material transferido por iteración. Alto = convergencia rápida pero puede crear artefactos. |
+
+---
+
 ## Gaussian blur
 
 Suaviza el heightmap con un filtro gaussiano separable (dos pasadas 1D: horizontal + vertical). Útil para eliminar artefactos de la erosión o suavizar ruido de alta frecuencia antes de exportar.
@@ -287,13 +314,14 @@ La resolución 3D es independiente del preview 2D — se puede tener un preview 
 
 ## Exportación
 
-La ruta base se escribe en el campo de texto. Los tres botones derivan sus rutas del stem de esa ruta:
+La ruta base se escribe en el campo de texto. Los botones derivan sus rutas del stem de esa ruta:
 
 | Botón | Archivo generado | Descripción |
 |-------|-----------------|-------------|
 | 💾 8-bit | `<nombre>.png` | PNG escala de grises 8 bits (0 – 255). |
 | 💾 16-bit | `<nombre>_16.png` | PNG escala de grises 16 bits (0 – 65535). Mayor precisión para engines. |
 | 🗺 Normal map | `<nombre>_normal.png` | PNG RGB con la normal derivada del heightmap. |
+| 📦 OBJ | `<nombre>.obj` | Mesh triangulado 3D importable en Blender, Unity, Unreal, etc. |
 
 ### Normal map
 
@@ -310,6 +338,65 @@ B  = (Nz + 1) / 2 * 255
 
 El parámetro **Normal map strength** (1 – 32) escala la magnitud de los gradientes. Valores altos resaltan detalles finos, valores bajos producen normales más suaves.
 
+### OBJ export
+
+Genera un mesh triangulado con `res × res` vértices y `(res−1)² × 2` triángulos. Cada vértice:
+
+```
+v  x        y               z
+   [0, 1]   h × escala_3D   [0, 1]
+```
+
+La escala vertical reutiliza el parámetro **Escala vertical** de la vista 3D. El parámetro **OBJ resolution** (32 – 512 px) es independiente de la resolución de exportación PNG para mantener el archivo manejable.
+
+---
+
+## Presets
+
+Guarda y carga todos los parámetros de generación como un archivo JSON legible. Útil para compartir configuraciones o retomar un trabajo anterior.
+
+| Campo | Descripción |
+|-------|-------------|
+| Preset path | Ruta del archivo `.json`. Por defecto `~/preset.json`. |
+| 💾 Guardar preset | Escribe el estado actual a disco. |
+| 📂 Cargar preset | Lee el archivo y aplica todos los parámetros; regenera automáticamente. |
+
+El JSON incluye todos los parámetros de ruido, capas, erosión, falloff, post-process y visualización. Los campos de exportación (rutas, resolución de preview) no se guardan.
+
+---
+
+## Exportación por lotes de chunks
+
+Disponible cuando **Chunk mode** está activo. Exporta un rango rectangular de chunks de una sola vez.
+
+| Campo | Descripción |
+|-------|-------------|
+| X de / a | Rango de coordenadas de chunk en el eje X. |
+| Y de / a | Rango de coordenadas de chunk en el eje Y. |
+| 📦 Exportar lote | Genera todos los chunks del rango y los guarda en el mismo directorio que el export path. |
+
+Cada archivo se nombra `<stem>_cx<X>_cy<Y>.png`. Para un rango de 3×3 centrado en el origen se generan 9 archivos PNG de 8 bits a la resolución de exportación configurada.
+
+**Flujo de trabajo:**
+1. Activar Chunk mode y ajustar Chunk size.
+2. Definir seed y parámetros.
+3. Establecer el rango de X/Y y pulsar **Exportar lote**.
+4. En el engine, posicionar el chunk `(cx, cy)` en `(cx × tam, cy × tam)`.
+
+---
+
+## Randomize
+
+El botón **🎲 Randomize** (esquina superior derecha del panel) aleatoriza todos los parámetros de generación de una vez:
+
+- Seed, algoritmo de ruido, fractal combiner, octavas, frecuencia, lacunarity, persistence.
+- Domain warp (40% de probabilidad).
+- Post-process (50% desactivado, 50% modo aleatorio).
+- Falloff map (35%, con geometría coherente inner < outer).
+- Capas adicionales (30% cada una, con blend mode y pesos aleatorios).
+
+Los parámetros de exportación, resolución, erosión y vista 3D no se tocan.
+
 ---
 
 ## Dependencias
@@ -322,3 +409,5 @@ El parámetro **Normal map strength** (1 – 32) escala la magnitud de los gradi
 | image | 0.25 | Escritura de PNG 8-bit, 16-bit y RGB. |
 | noise | 0.9 | Algoritmos de ruido procedural. |
 | rand | 0.8 | RNG para seed aleatorio y posición de gotas de erosión. |
+| serde | 1 | Serialización/deserialización para presets. |
+| serde_json | 1 | Formato JSON para archivos de preset. |

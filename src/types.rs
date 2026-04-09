@@ -1,8 +1,9 @@
 use egui::Color32;
+use serde::{Deserialize, Serialize};
 
 // ── Noise algorithm selector ────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum NoiseType {
     Perlin,
     OpenSimplex,
@@ -33,7 +34,7 @@ impl NoiseType {
 
 // ── Fractal combiner selector ───────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum FractalType {
     None,
     Fbm,
@@ -67,7 +68,7 @@ impl FractalType {
 
 // ── Post-processing operations ──────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PostProcess {
     None,
     Terrace,
@@ -101,7 +102,7 @@ impl PostProcess {
 
 // ── Color ramp for preview ──────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ColorMode {
     Grayscale,
     Terrain,
@@ -191,6 +192,63 @@ impl ColorMode {
     }
 }
 
+// ── Serializable preset (all generation parameters) ────────────────────────
+
+#[derive(Serialize, Deserialize)]
+pub struct Preset {
+    pub noise_type: NoiseType,
+    pub fractal_type: FractalType,
+    pub seed: u32,
+    pub octaves: u32,
+    pub frequency: f64,
+    pub lacunarity: f64,
+    pub persistence: f64,
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub chunk_mode: bool,
+    pub chunk_x: i32,
+    pub chunk_y: i32,
+    pub chunk_size: f64,
+    pub warp_enabled: bool,
+    pub warp_strength: f64,
+    pub warp_frequency: f64,
+    pub seamless_enabled: bool,
+    pub layers: [Layer; 2],
+    pub resolution: u32,
+    pub export_resolution: u32,
+    pub post_process: PostProcess,
+    pub terrace_levels: u32,
+    pub power_exp: f32,
+    pub clamp_min: f32,
+    pub clamp_max: f32,
+    pub falloff_enabled: bool,
+    pub falloff_inner: f32,
+    pub falloff_outer: f32,
+    pub falloff_shape: FalloffShape,
+    pub falloff_edge_noise: f32,
+    pub falloff_noise_freq: f32,
+    pub falloff_exponent: f32,
+    pub erosion_enabled: bool,
+    pub erosion_droplets: u32,
+    pub erosion_inertia: f32,
+    pub erosion_capacity: f32,
+    pub erosion_deposition: f32,
+    pub erosion_erosion_speed: f32,
+    pub erosion_evaporation: f32,
+    pub erosion_radius: usize,
+    pub thermal_enabled: bool,
+    pub thermal_talus: f32,
+    pub thermal_iterations: u32,
+    pub thermal_strength: f32,
+    pub blur_enabled: bool,
+    pub blur_sigma: f32,
+    pub percentile_enabled: bool,
+    pub percentile_low: f32,
+    pub percentile_high: f32,
+    pub color_mode: ColorMode,
+    pub normal_strength: f32,
+}
+
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let mix = |a: u8, b: u8| -> u8 { (a as f32 + (b as f32 - a as f32) * t).round() as u8 };
     Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
@@ -198,7 +256,7 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 
 // ── Blend modes for layer compositing ──────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BlendMode {
     Add,
     Multiply,
@@ -229,7 +287,7 @@ impl BlendMode {
 
 // ── Falloff shape ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum FalloffShape {
     Circle,
     Square,
@@ -248,6 +306,7 @@ impl FalloffShape {
 
 // ── Additional noise layer ──────────────────────────────────────────────────
 
+#[derive(Serialize, Deserialize)]
 pub struct Layer {
     pub enabled: bool,
     pub noise_type: NoiseType,

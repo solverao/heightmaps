@@ -90,7 +90,18 @@ impl eframe::App for HeightmapApp {
             .resizable(true)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading("⛰ Heightmap Generator");
+                    ui.horizontal(|ui| {
+                        ui.heading("⛰ Heightmap Generator");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button("🎲 Randomize")
+                                .on_hover_text("Aleatoriza todos los parámetros de generación")
+                                .clicked()
+                            {
+                                self.randomize();
+                            }
+                        });
+                    });
                     ui.separator();
 
                     // ── Vista ──
@@ -312,6 +323,42 @@ impl eframe::App for HeightmapApp {
 
                         let (ox, oy) = self.effective_offset();
                         ui.label(format!("Offset: X={ox:.2}  Y={oy:.2}"));
+
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.label("Exportación por lotes");
+                        ui.horizontal(|ui| {
+                            ui.label("X:");
+                            ui.add(egui::DragValue::new(&mut self.batch_x_min).prefix("de ").speed(1));
+                            ui.add(egui::DragValue::new(&mut self.batch_x_max).prefix("a ").speed(1));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Y:");
+                            ui.add(egui::DragValue::new(&mut self.batch_y_min).prefix("de ").speed(1));
+                            ui.add(egui::DragValue::new(&mut self.batch_y_max).prefix("a ").speed(1));
+                        });
+                        let nx = (self.batch_x_max - self.batch_x_min + 1).max(0) as usize;
+                        let ny = (self.batch_y_max - self.batch_y_min + 1).max(0) as usize;
+                        ui.weak(format!("{} chunks ({nx}×{ny})", nx * ny));
+                        if ui.button("📦 Exportar lote").clicked() {
+                            let base = PathBuf::from(&self.export_path);
+                            let stem = base
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned();
+                            let dir = base
+                                .parent()
+                                .unwrap_or(std::path::Path::new("."))
+                                .to_path_buf();
+                            self.batch_status = Some(match self.export_chunks_batch(dir, stem) {
+                                Ok(n) => format!("Exportados {n} chunks"),
+                                Err(e) => e,
+                            });
+                        }
+                        if let Some(status) = &self.batch_status {
+                            ui.weak(status.as_str());
+                        }
                     } else {
                         // ── Manual offset ──
                         ui.add_space(4.0);
@@ -517,6 +564,45 @@ impl eframe::App for HeightmapApp {
                             }
                             ui.add_space(2.0);
                             ui.weak(format!("~{} M iteraciones", self.erosion_droplets / 1000));
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+
+                    // ── Thermal erosion ──
+                    egui::CollapsingHeader::new("Erosión térmica")
+                        .id_salt("thermal")
+                        .show(ui, |ui| {
+                            if ui.checkbox(&mut self.thermal_enabled, "Activa").changed() {
+                                self.dirty = true;
+                            }
+                            if !self.thermal_enabled {
+                                return;
+                            }
+                            ui.add_space(2.0);
+                            ui.label("Talud (ángulo de reposo)");
+                            if ui
+                                .add(egui::Slider::new(&mut self.thermal_talus, 0.01..=0.5))
+                                .changed()
+                            {
+                                self.dirty = true;
+                            }
+                            ui.label("Iteraciones");
+                            if ui
+                                .add(egui::Slider::new(&mut self.thermal_iterations, 1..=100))
+                                .changed()
+                            {
+                                self.dirty = true;
+                            }
+                            ui.label("Fuerza");
+                            if ui
+                                .add(egui::Slider::new(&mut self.thermal_strength, 0.01..=1.0))
+                                .changed()
+                            {
+                                self.dirty = true;
+                            }
+                            ui.add_space(2.0);
+                            ui.weak("Derrumba pendientes pronunciadas → acantilados suaves");
                         });
 
                     ui.add_space(8.0);
@@ -744,6 +830,14 @@ impl eframe::App for HeightmapApp {
                     ui.text_edit_singleline(&mut self.export_path);
 
                     ui.add_space(4.0);
+                    ui.label("OBJ resolution");
+                    ui.add(
+                        egui::Slider::new(&mut self.export_obj_res, 32..=512)
+                            .suffix("px")
+                            .logarithmic(true),
+                    );
+
+                    ui.add_space(4.0);
                     ui.label("Normal map strength");
                     ui.add(egui::Slider::new(&mut self.normal_strength, 1.0..=32.0));
 
@@ -759,6 +853,20 @@ impl eframe::App for HeightmapApp {
                         .parent()
                         .unwrap_or(std::path::Path::new("."))
                         .to_path_buf();
+
+                    ui.horizontal(|ui| {
+                        let path_obj = dir.join(format!("{stem}.obj"));
+                        if ui
+                            .button("📦 OBJ")
+                            .on_hover_text(path_obj.display().to_string())
+                            .clicked()
+                        {
+                            self.export_status = Some(match self.export_obj(path_obj.clone()) {
+                                Ok(()) => format!("Guardado OBJ: {}", path_obj.display()),
+                                Err(e) => e,
+                            });
+                        }
+                    });
 
                     ui.horizontal(|ui| {
                         if ui
@@ -799,6 +907,32 @@ impl eframe::App for HeightmapApp {
                     if let Some(status) = &self.export_status {
                         ui.add_space(4.0);
                         ui.label(status.as_str());
+                    }
+
+                    ui.add_space(8.0);
+                    ui.separator();
+
+                    // ── Preset save / load ──
+                    ui.label("Preset path");
+                    ui.text_edit_singleline(&mut self.preset_path);
+                    ui.horizontal(|ui| {
+                        if ui.button("💾 Guardar preset").clicked() {
+                            let path = PathBuf::from(&self.preset_path);
+                            self.preset_status = Some(match self.save_preset(path) {
+                                Ok(()) => format!("Preset guardado: {}", self.preset_path),
+                                Err(e) => e,
+                            });
+                        }
+                        if ui.button("📂 Cargar preset").clicked() {
+                            let path = PathBuf::from(&self.preset_path);
+                            self.preset_status = Some(match self.load_preset(path) {
+                                Ok(()) => format!("Preset cargado: {}", self.preset_path),
+                                Err(e) => e,
+                            });
+                        }
+                    });
+                    if let Some(status) = &self.preset_status {
+                        ui.weak(status.as_str());
                     }
 
                     ui.add_space(8.0);

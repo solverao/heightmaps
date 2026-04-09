@@ -5,11 +5,12 @@ use noise::{
     SuperSimplex, Value, Worley,
 };
 use rand::prelude::*;
+use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use std::path::PathBuf; // Para paralelismo
 
 use crate::types::{
-    BlendMode, ColorMode, FalloffShape, FractalType, Layer, NoiseType, PostProcess,
+    BlendMode, ColorMode, FalloffShape, FractalType, Layer, NoiseType, PostProcess, Preset,
 };
 
 fn default_export_path() -> String {
@@ -220,6 +221,26 @@ pub struct HeightmapApp {
     pub zoom: f32,
     pub pan: egui::Vec2,
 
+    // Thermal erosion
+    pub thermal_enabled: bool,
+    pub thermal_talus: f32,
+    pub thermal_iterations: u32,
+    pub thermal_strength: f32,
+
+    // OBJ export
+    pub export_obj_res: u32,
+
+    // Preset save/load
+    pub preset_path: String,
+    pub preset_status: Option<String>,
+
+    // Batch chunk export
+    pub batch_x_min: i32,
+    pub batch_x_max: i32,
+    pub batch_y_min: i32,
+    pub batch_y_max: i32,
+    pub batch_status: Option<String>,
+
     // Status
     pub last_gen_ms: f64,
 }
@@ -294,6 +315,21 @@ impl Default for HeightmapApp {
             histogram_visible: true,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
+            thermal_enabled: false,
+            thermal_talus: 0.08,
+            thermal_iterations: 25,
+            thermal_strength: 0.5,
+            export_obj_res: 256,
+            preset_path: {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                format!("{}/preset.json", home)
+            },
+            preset_status: None,
+            batch_x_min: 0,
+            batch_x_max: 2,
+            batch_y_min: 0,
+            batch_y_max: 2,
+            batch_status: None,
             last_gen_ms: 0.0,
         }
     }
@@ -515,6 +551,11 @@ impl HeightmapApp {
         // ── Hydraulic erosion ───────────────────────────────────────────────
         if self.erosion_enabled {
             self.erode(&mut data, size);
+        }
+
+        // ── Thermal erosion ─────────────────────────────────────────────────
+        if self.thermal_enabled {
+            self.thermal_erode(&mut data, size);
         }
 
         // ── Gaussian blur ────────────────────────────────────────────────────
@@ -840,6 +881,309 @@ impl HeightmapApp {
             Luma([(v * 65535.0) as u16])
         });
         img.save(&path).map_err(|e| format!("Error: {e}"))
+    }
+
+    // ── Randomize all generation parameters ─────────────────────────────────
+    pub fn randomize(&mut self) {
+        let mut rng = rand::thread_rng();
+
+        self.seed = rng.gen();
+        self.noise_type = *NoiseType::ALL.choose(&mut rng).unwrap();
+        self.fractal_type = *FractalType::ALL.choose(&mut rng).unwrap();
+        self.octaves = rng.gen_range(2..=8);
+        self.frequency = rng.gen_range(1.0_f64..=8.0);
+        self.lacunarity = rng.gen_range(1.5_f64..=3.0);
+        self.persistence = rng.gen_range(0.3_f64..=0.7);
+
+        // domain warp: ~40% de probabilidad
+        self.warp_enabled = rng.gen_bool(0.4);
+        if self.warp_enabled {
+            self.warp_strength = rng.gen_range(0.05_f64..=1.0);
+            self.warp_frequency = rng.gen_range(0.5_f64..=6.0);
+        }
+
+        // post-process: elegir uno al azar (con más peso a None)
+        self.post_process = if rng.gen_bool(0.5) {
+            PostProcess::None
+        } else {
+            *PostProcess::ALL.choose(&mut rng).unwrap()
+        };
+        self.terrace_levels = rng.gen_range(4..=16);
+        self.power_exp = rng.gen_range(0.3_f32..=4.0);
+
+        // falloff: ~35%
+        self.falloff_enabled = rng.gen_bool(0.35);
+        if self.falloff_enabled {
+            let inner: f32 = rng.gen_range(0.1..=0.45);
+            self.falloff_inner = inner;
+            self.falloff_outer = rng.gen_range((inner + 0.1).min(0.9)..=0.95);
+            self.falloff_shape = *FalloffShape::ALL.choose(&mut rng).unwrap();
+            self.falloff_edge_noise = rng.gen_range(0.0_f32..=0.3);
+            self.falloff_noise_freq = rng.gen_range(1.0_f32..=8.0);
+            self.falloff_exponent = rng.gen_range(0.4_f32..=2.5);
+        }
+
+        // capas adicionales: cada una ~30%
+        for layer in self.layers.iter_mut() {
+            layer.enabled = rng.gen_bool(0.3);
+            if layer.enabled {
+                layer.noise_type = *NoiseType::ALL.choose(&mut rng).unwrap();
+                layer.fractal_type = *FractalType::ALL.choose(&mut rng).unwrap();
+                layer.blend_mode = *BlendMode::ALL.choose(&mut rng).unwrap();
+                layer.weight = rng.gen_range(0.2_f32..=0.8);
+                layer.frequency_scale = rng.gen_range(0.5_f64..=4.0);
+                layer.seed_offset = rng.gen_range(1..=500u32);
+            }
+        }
+
+        self.dirty = true;
+    }
+
+    // ── Thermal erosion ─────────────────────────────────────────────────────
+    fn thermal_erode(&self, data: &mut Vec<f32>, size: usize) {
+        let talus = self.thermal_talus;
+        let strength = self.thermal_strength;
+
+        for _ in 0..self.thermal_iterations {
+            let snapshot = data.clone();
+            for y in 0..size {
+                for x in 0..size {
+                    let h = snapshot[y * size + x];
+                    // 4-neighbor offsets using wrapping sub so bounds check catches usize overflow
+                    let neighbors: [(usize, usize); 4] = [
+                        (x.wrapping_sub(1), y),
+                        (x + 1, y),
+                        (x, y.wrapping_sub(1)),
+                        (x, y + 1),
+                    ];
+                    let mut diffs = [0.0f32; 4];
+                    let mut total_diff = 0.0f32;
+                    for (i, &(nx, ny)) in neighbors.iter().enumerate() {
+                        if nx < size && ny < size {
+                            let diff = h - snapshot[ny * size + nx];
+                            if diff > talus {
+                                diffs[i] = diff - talus;
+                                total_diff += diffs[i];
+                            }
+                        }
+                    }
+                    if total_diff > 0.0 {
+                        let moved = total_diff * strength * 0.5;
+                        data[y * size + x] -= moved;
+                        for (i, &(nx, ny)) in neighbors.iter().enumerate() {
+                            if nx < size && ny < size && diffs[i] > 0.0 {
+                                data[ny * size + nx] += moved * (diffs[i] / total_diff);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let min = data.iter().cloned().fold(f32::MAX, f32::min);
+        let max = data.iter().cloned().fold(f32::MIN, f32::max);
+        let range = (max - min).max(1e-10);
+        for v in data.iter_mut() {
+            *v = (*v - min) / range;
+        }
+    }
+
+    // ── OBJ export ──────────────────────────────────────────────────────────
+    pub fn export_obj(&mut self, path: PathBuf) -> Result<(), String> {
+        use std::fmt::Write as FmtWrite;
+        let res = self.export_obj_res;
+        let data = self.generate(res);
+        let size = res as usize;
+        let scale = self.elevation_scale;
+
+        let mut out = String::with_capacity(size * size * 32);
+        writeln!(out, "# Heightmap Generator export").unwrap();
+        writeln!(out, "o heightmap").unwrap();
+
+        for y in 0..size {
+            for x in 0..size {
+                let h = data[y * size + x];
+                let xf = x as f32 / (size - 1).max(1) as f32;
+                let zf = y as f32 / (size - 1).max(1) as f32;
+                writeln!(out, "v {:.6} {:.6} {:.6}", xf, h * scale, zf).unwrap();
+            }
+        }
+
+        for y in 0..(size - 1) {
+            for x in 0..(size - 1) {
+                let i0 = y * size + x + 1;
+                let i1 = y * size + x + 2;
+                let i2 = (y + 1) * size + x + 1;
+                let i3 = (y + 1) * size + x + 2;
+                writeln!(out, "f {i0} {i1} {i2}").unwrap();
+                writeln!(out, "f {i1} {i3} {i2}").unwrap();
+            }
+        }
+
+        std::fs::write(&path, out).map_err(|e| format!("Error OBJ: {e}"))
+    }
+
+    // ── Preset save / load ──────────────────────────────────────────────────
+    pub fn save_preset(&self, path: PathBuf) -> Result<(), String> {
+        let preset = Preset {
+            noise_type: self.noise_type,
+            fractal_type: self.fractal_type,
+            seed: self.seed,
+            octaves: self.octaves,
+            frequency: self.frequency,
+            lacunarity: self.lacunarity,
+            persistence: self.persistence,
+            offset_x: self.offset_x,
+            offset_y: self.offset_y,
+            chunk_mode: self.chunk_mode,
+            chunk_x: self.chunk_x,
+            chunk_y: self.chunk_y,
+            chunk_size: self.chunk_size,
+            warp_enabled: self.warp_enabled,
+            warp_strength: self.warp_strength,
+            warp_frequency: self.warp_frequency,
+            seamless_enabled: self.seamless_enabled,
+            layers: [
+                Layer {
+                    enabled: self.layers[0].enabled,
+                    noise_type: self.layers[0].noise_type,
+                    fractal_type: self.layers[0].fractal_type,
+                    seed_offset: self.layers[0].seed_offset,
+                    frequency_scale: self.layers[0].frequency_scale,
+                    weight: self.layers[0].weight,
+                    blend_mode: self.layers[0].blend_mode,
+                },
+                Layer {
+                    enabled: self.layers[1].enabled,
+                    noise_type: self.layers[1].noise_type,
+                    fractal_type: self.layers[1].fractal_type,
+                    seed_offset: self.layers[1].seed_offset,
+                    frequency_scale: self.layers[1].frequency_scale,
+                    weight: self.layers[1].weight,
+                    blend_mode: self.layers[1].blend_mode,
+                },
+            ],
+            resolution: self.resolution,
+            export_resolution: self.export_resolution,
+            post_process: self.post_process,
+            terrace_levels: self.terrace_levels,
+            power_exp: self.power_exp,
+            clamp_min: self.clamp_min,
+            clamp_max: self.clamp_max,
+            falloff_enabled: self.falloff_enabled,
+            falloff_inner: self.falloff_inner,
+            falloff_outer: self.falloff_outer,
+            falloff_shape: self.falloff_shape,
+            falloff_edge_noise: self.falloff_edge_noise,
+            falloff_noise_freq: self.falloff_noise_freq,
+            falloff_exponent: self.falloff_exponent,
+            erosion_enabled: self.erosion_enabled,
+            erosion_droplets: self.erosion_droplets,
+            erosion_inertia: self.erosion_inertia,
+            erosion_capacity: self.erosion_capacity,
+            erosion_deposition: self.erosion_deposition,
+            erosion_erosion_speed: self.erosion_erosion_speed,
+            erosion_evaporation: self.erosion_evaporation,
+            erosion_radius: self.erosion_radius,
+            thermal_enabled: self.thermal_enabled,
+            thermal_talus: self.thermal_talus,
+            thermal_iterations: self.thermal_iterations,
+            thermal_strength: self.thermal_strength,
+            blur_enabled: self.blur_enabled,
+            blur_sigma: self.blur_sigma,
+            percentile_enabled: self.percentile_enabled,
+            percentile_low: self.percentile_low,
+            percentile_high: self.percentile_high,
+            color_mode: self.color_mode,
+            normal_strength: self.normal_strength,
+        };
+        let json = serde_json::to_string_pretty(&preset)
+            .map_err(|e| format!("Serialize error: {e}"))?;
+        std::fs::write(&path, json).map_err(|e| format!("Write error: {e}"))
+    }
+
+    pub fn load_preset(&mut self, path: PathBuf) -> Result<(), String> {
+        let json = std::fs::read_to_string(&path).map_err(|e| format!("Read error: {e}"))?;
+        let p: Preset = serde_json::from_str(&json).map_err(|e| format!("Parse error: {e}"))?;
+        self.noise_type = p.noise_type;
+        self.fractal_type = p.fractal_type;
+        self.seed = p.seed;
+        self.octaves = p.octaves;
+        self.frequency = p.frequency;
+        self.lacunarity = p.lacunarity;
+        self.persistence = p.persistence;
+        self.offset_x = p.offset_x;
+        self.offset_y = p.offset_y;
+        self.chunk_mode = p.chunk_mode;
+        self.chunk_x = p.chunk_x;
+        self.chunk_y = p.chunk_y;
+        self.chunk_size = p.chunk_size;
+        self.warp_enabled = p.warp_enabled;
+        self.warp_strength = p.warp_strength;
+        self.warp_frequency = p.warp_frequency;
+        self.seamless_enabled = p.seamless_enabled;
+        self.layers = p.layers;
+        self.resolution = p.resolution;
+        self.export_resolution = p.export_resolution;
+        self.post_process = p.post_process;
+        self.terrace_levels = p.terrace_levels;
+        self.power_exp = p.power_exp;
+        self.clamp_min = p.clamp_min;
+        self.clamp_max = p.clamp_max;
+        self.falloff_enabled = p.falloff_enabled;
+        self.falloff_inner = p.falloff_inner;
+        self.falloff_outer = p.falloff_outer;
+        self.falloff_shape = p.falloff_shape;
+        self.falloff_edge_noise = p.falloff_edge_noise;
+        self.falloff_noise_freq = p.falloff_noise_freq;
+        self.falloff_exponent = p.falloff_exponent;
+        self.erosion_enabled = p.erosion_enabled;
+        self.erosion_droplets = p.erosion_droplets;
+        self.erosion_inertia = p.erosion_inertia;
+        self.erosion_capacity = p.erosion_capacity;
+        self.erosion_deposition = p.erosion_deposition;
+        self.erosion_erosion_speed = p.erosion_erosion_speed;
+        self.erosion_evaporation = p.erosion_evaporation;
+        self.erosion_radius = p.erosion_radius;
+        self.thermal_enabled = p.thermal_enabled;
+        self.thermal_talus = p.thermal_talus;
+        self.thermal_iterations = p.thermal_iterations;
+        self.thermal_strength = p.thermal_strength;
+        self.blur_enabled = p.blur_enabled;
+        self.blur_sigma = p.blur_sigma;
+        self.percentile_enabled = p.percentile_enabled;
+        self.percentile_low = p.percentile_low;
+        self.percentile_high = p.percentile_high;
+        self.color_mode = p.color_mode;
+        self.normal_strength = p.normal_strength;
+        self.dirty = true;
+        Ok(())
+    }
+
+    // ── Batch chunk export ───────────────────────────────────────────────────
+    pub fn export_chunks_batch(&mut self, dir: PathBuf, stem: String) -> Result<usize, String> {
+        let orig_x = self.chunk_x;
+        let orig_y = self.chunk_y;
+        let orig_mode = self.chunk_mode;
+        self.chunk_mode = true;
+        let mut count = 0usize;
+        let x_range = self.batch_x_min..=self.batch_x_max;
+        let y_range = self.batch_y_min..=self.batch_y_max;
+
+        for cy in y_range {
+            for cx in x_range.clone() {
+                self.chunk_x = cx;
+                self.chunk_y = cy;
+                let path = dir.join(format!("{stem}_cx{cx}_cy{cy}.png"));
+                self.export_png(path)?;
+                count += 1;
+            }
+        }
+
+        self.chunk_x = orig_x;
+        self.chunk_y = orig_y;
+        self.chunk_mode = orig_mode;
+        Ok(count)
     }
 
     pub fn export_normal_png(&mut self, path: PathBuf) -> Result<(), String> {
