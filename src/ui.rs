@@ -381,12 +381,17 @@ impl eframe::App for HeightmapApp {
                                 .unwrap_or(std::path::Path::new("."))
                                 .to_path_buf();
                             self.batch_status = Some(match self.export_chunks_batch(dir, stem) {
-                                Ok(n) => format!("Exportados {n} chunks"),
-                                Err(e) => e,
+                                Ok(n) => (format!("✔ {n} chunks exportados"), true),
+                                Err(e) => (format!("✖ Error: {e}"), false),
                             });
                         }
-                        if let Some(status) = &self.batch_status {
-                            ui.weak(status.as_str());
+                        if let Some((msg, ok)) = &self.batch_status {
+                            let color = if *ok {
+                                egui::Color32::from_rgb(100, 220, 100)
+                            } else {
+                                egui::Color32::from_rgb(240, 80, 80)
+                            };
+                            ui.colored_label(color, msg.as_str());
                         }
                     } else {
                         // ── Manual offset ──
@@ -942,8 +947,8 @@ impl eframe::App for HeightmapApp {
                             .clicked()
                         {
                             self.export_status = Some(match self.export_obj(path_obj.clone()) {
-                                Ok(()) => format!("Guardado OBJ: {}", path_obj.display()),
-                                Err(e) => e,
+                                Ok(()) => (format!("✔ OBJ guardado: {}", path_obj.display()), true),
+                                Err(e) => (format!("✖ Error: {e}"), false),
                             });
                         }
                     });
@@ -955,8 +960,8 @@ impl eframe::App for HeightmapApp {
                             .clicked()
                         {
                             self.export_status = Some(match self.export_png(base.clone()) {
-                                Ok(()) => format!("Guardado 8-bit: {}", self.export_path),
-                                Err(e) => e,
+                                Ok(()) => (format!("✔ 8-bit guardado: {}", self.export_path), true),
+                                Err(e) => (format!("✖ Error: {e}"), false),
                             });
                         }
                         let path16 = dir.join(format!("{stem}_16.png"));
@@ -966,8 +971,8 @@ impl eframe::App for HeightmapApp {
                             .clicked()
                         {
                             self.export_status = Some(match self.export_png16(path16.clone()) {
-                                Ok(()) => format!("Guardado 16-bit: {}", path16.display()),
-                                Err(e) => e,
+                                Ok(()) => (format!("✔ 16-bit guardado: {}", path16.display()), true),
+                                Err(e) => (format!("✖ Error: {e}"), false),
                             });
                         }
                         let path_exr = dir.join(format!("{stem}.exr"));
@@ -977,8 +982,8 @@ impl eframe::App for HeightmapApp {
                             .clicked()
                         {
                             self.export_status = Some(match self.export_exr(path_exr.clone()) {
-                                Ok(()) => format!("Guardado EXR: {}", path_exr.display()),
-                                Err(e) => e,
+                                Ok(()) => (format!("✔ EXR guardado: {}", path_exr.display()), true),
+                                Err(e) => (format!("✖ Error: {e}"), false),
                             });
                         }
                     });
@@ -991,8 +996,8 @@ impl eframe::App for HeightmapApp {
                         {
                             self.export_status =
                                 Some(match self.export_normal_png(path_nm.clone()) {
-                                    Ok(()) => format!("Guardado normal: {}", path_nm.display()),
-                                    Err(e) => e,
+                                    Ok(()) => (format!("✔ Normal guardado: {}", path_nm.display()), true),
+                                    Err(e) => (format!("✖ Error: {e}"), false),
                                 });
                         }
                         let path_slope = dir.join(format!("{stem}_slope.png"));
@@ -1003,8 +1008,8 @@ impl eframe::App for HeightmapApp {
                         {
                             self.export_status =
                                 Some(match self.export_slope_png(path_slope.clone()) {
-                                    Ok(()) => format!("Guardado slope: {}", path_slope.display()),
-                                    Err(e) => e,
+                                    Ok(()) => (format!("✔ Slope guardado: {}", path_slope.display()), true),
+                                    Err(e) => (format!("✖ Error: {e}"), false),
                                 });
                         }
                         let path_wet = dir.join(format!("{stem}_wetness.png"));
@@ -1015,15 +1020,20 @@ impl eframe::App for HeightmapApp {
                         {
                             self.export_status =
                                 Some(match self.export_wetness_png(path_wet.clone()) {
-                                    Ok(()) => format!("Guardado wetness: {}", path_wet.display()),
-                                    Err(e) => e,
+                                    Ok(()) => (format!("✔ Wetness guardado: {}", path_wet.display()), true),
+                                    Err(e) => (format!("✖ Error: {e}"), false),
                                 });
                         }
                     });
 
-                    if let Some(status) = &self.export_status {
+                    if let Some((msg, ok)) = &self.export_status {
                         ui.add_space(4.0);
-                        ui.label(status.as_str());
+                        let color = if *ok {
+                            egui::Color32::from_rgb(100, 220, 100)
+                        } else {
+                            egui::Color32::from_rgb(240, 80, 80)
+                        };
+                        ui.colored_label(color, msg.as_str());
                     }
 
                     ui.add_space(8.0);

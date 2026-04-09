@@ -281,7 +281,7 @@ pub struct HeightmapApp {
 
     // Export
     pub export_path: String,
-    pub export_status: Option<String>,
+    pub export_status: Option<(String, bool)>, // (mensaje, es_ok)
     pub normal_strength: f32,
 
     // Histogram
@@ -309,7 +309,7 @@ pub struct HeightmapApp {
     pub batch_x_max: i32,
     pub batch_y_min: i32,
     pub batch_y_max: i32,
-    pub batch_status: Option<String>,
+    pub batch_status: Option<(String, bool)>,
 
     // Status
     pub last_gen_ms: f64,
