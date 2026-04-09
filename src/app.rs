@@ -109,45 +109,6 @@ fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
     }
 }
 
-// ── Hydraulic erosion helpers ───────────────────────────────────────────────
-
-// fn hyd_sample(data: &[f32], n: usize, x: f32, y: f32) -> f32 {
-//     let xi = (x.floor() as usize).min(n - 2);
-//     let yi = (y.floor() as usize).min(n - 2);
-//     let fx = x - xi as f32;
-//     let fy = y - yi as f32;
-//     let h00 = data[yi * n + xi];
-//     let h10 = data[yi * n + xi + 1];
-//     let h01 = data[(yi + 1) * n + xi];
-//     let h11 = data[(yi + 1) * n + xi + 1];
-//     h00 * (1.0 - fx) * (1.0 - fy) + h10 * fx * (1.0 - fy) + h01 * (1.0 - fx) * fy + h11 * fx * fy
-// }
-
-// fn hyd_gradient(data: &[f32], n: usize, x: f32, y: f32) -> (f32, f32) {
-//     let xi = (x.floor() as usize).min(n - 2);
-//     let yi = (y.floor() as usize).min(n - 2);
-//     let fx = x - xi as f32;
-//     let fy = y - yi as f32;
-//     let h00 = data[yi * n + xi];
-//     let h10 = data[yi * n + xi + 1];
-//     let h01 = data[(yi + 1) * n + xi];
-//     let h11 = data[(yi + 1) * n + xi + 1];
-//     let gx = (h10 - h00) * (1.0 - fy) + (h11 - h01) * fy;
-//     let gy = (h01 - h00) * (1.0 - fx) + (h11 - h10) * fx;
-//     (gx, gy)
-// }
-
-// fn hyd_deposit(data: &mut [f32], n: usize, x: f32, y: f32, amount: f32) {
-//     let xi = (x.floor() as usize).min(n - 2);
-//     let yi = (y.floor() as usize).min(n - 2);
-//     let fx = x - xi as f32;
-//     let fy = y - yi as f32;
-//     data[yi * n + xi] += amount * (1.0 - fx) * (1.0 - fy);
-//     data[yi * n + xi + 1] += amount * fx * (1.0 - fy);
-//     data[(yi + 1) * n + xi] += amount * (1.0 - fx) * fy;
-//     data[(yi + 1) * n + xi + 1] += amount * fx * fy;
-// }
-
 // ── Seamless blend helper ───────────────────────────────────────────────────
 //
 // Samples `f` at (x,y), (x-1,y), (x,y-1), (x-1,y-1) and blends with
@@ -551,8 +512,7 @@ impl HeightmapApp {
 
         // ── Hydraulic erosion ───────────────────────────────────────────────
         if self.erosion_enabled {
-            // self.erode(&mut data, size);
-            self.perform_erosion(&mut data, size);
+            self.erode(&mut data, size);
         }
 
         // ── Gaussian blur ────────────────────────────────────────────────────
@@ -677,93 +637,7 @@ impl HeightmapApp {
         }
     }
 
-    // fn erode(&self, data: &mut Vec<f32>, size: usize) {
-    //     use rand::Rng;
-    //     let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed as u64 ^ 0xDEAD_BEEF);
-
-    //     let n          = size;
-    //     let inertia    = self.erosion_inertia;
-    //     let capacity   = self.erosion_capacity;
-    //     let deposit_k  = self.erosion_deposition;
-    //     let erode_k    = self.erosion_erosion_speed;
-    //     let evaporate  = self.erosion_evaporation;
-    //     let gravity    = 10.0_f32;
-    //     let max_steps  = 64_usize;
-    //     let min_slope  = 0.001_f32;
-
-    //     for _ in 0..self.erosion_droplets {
-    //         // Random start in pixel space, away from borders
-    //         let mut x = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
-    //         let mut y = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
-    //         let mut dir_x   = 0.0_f32;
-    //         let mut dir_y   = 0.0_f32;
-    //         let mut speed   = 1.0_f32;
-    //         let mut water   = 1.0_f32;
-    //         let mut sediment = 0.0_f32;
-
-    //         for _ in 0..max_steps {
-    //             // Gradient at current position
-    //             let (gx, gy) = hyd_gradient(data, n, x, y);
-
-    //             // Update direction with inertia
-    //             dir_x = dir_x * inertia - gx * (1.0 - inertia);
-    //             dir_y = dir_y * inertia - gy * (1.0 - inertia);
-    //             let len = (dir_x * dir_x + dir_y * dir_y).sqrt().max(1e-6);
-    //             dir_x /= len;
-    //             dir_y /= len;
-
-    //             let nx = x + dir_x;
-    //             let ny = y + dir_y;
-
-    //             // Stop if out of bounds
-    //             if nx < 0.5 || nx >= (n - 1) as f32 - 0.5
-    //                 || ny < 0.5 || ny >= (n - 1) as f32 - 0.5 {
-    //                 break;
-    //             }
-
-    //             let h_old = hyd_sample(data, n, x, y);
-    //             let h_new = hyd_sample(data, n, nx, ny);
-    //             let delta_h = h_new - h_old;
-
-    //             // Sediment capacity proportional to speed, water, and slope
-    //             let c = (-delta_h).max(min_slope) * speed * water * capacity;
-
-    //             if sediment > c || delta_h > 0.0 {
-    //                 // Deposit: fill uphill gaps fully, otherwise deposit fraction
-    //                 let deposit = if delta_h > 0.0 {
-    //                     delta_h.min(sediment)
-    //                 } else {
-    //                     (sediment - c) * deposit_k
-    //                 };
-    //                 sediment -= deposit;
-    //                 hyd_deposit(data, n, x, y, deposit);
-    //             } else {
-    //                 // Erode: remove sediment from current cell
-    //                 let amount = ((c - sediment) * erode_k).min(-delta_h.max(0.0) + 0.01);
-    //                 let amount = amount.max(0.0);
-    //                 sediment  += amount;
-    //                 hyd_deposit(data, n, x, y, -amount);
-    //             }
-
-    //             speed = (speed * speed + delta_h.abs() * gravity).sqrt().max(0.01);
-    //             water *= 1.0 - evaporate;
-    //             x = nx;
-    //             y = ny;
-
-    //             if water < 0.001 { break; }
-    //         }
-    //     }
-
-    //     // Re-normalize to 0..1 after erosion shifts the range
-    //     let min = data.iter().cloned().fold(f32::MAX, f32::min);
-    //     let max = data.iter().cloned().fold(f32::MIN, f32::max);
-    //     let range = (max - min).max(1e-10);
-    //     for v in data.iter_mut() {
-    //         *v = (*v - min) / range;
-    //     }
-    // }
-
-    fn perform_erosion(&self, data: &mut Vec<f32>, size: usize) {
+    fn erode(&self, data: &mut Vec<f32>, size: usize) {
         let n = size;
         let inertia = self.erosion_inertia;
         let capacity = self.erosion_capacity;
