@@ -508,6 +508,13 @@ impl eframe::App for HeightmapApp {
                             {
                                 self.dirty = true;
                             }
+                            ui.label("Radio de erosión");
+                            if ui
+                                .add(egui::Slider::new(&mut self.erosion_radius, 0..=6))
+                                .changed()
+                            {
+                                self.dirty = true;
+                            }
                             ui.add_space(2.0);
                             ui.weak(format!("~{} M iteraciones", self.erosion_droplets / 1000));
                         });

@@ -200,6 +200,7 @@ pub struct HeightmapApp {
     pub erosion_deposition: f32,
     pub erosion_erosion_speed: f32,
     pub erosion_evaporation: f32,
+    pub erosion_radius: usize,
 
     // Preview
     pub color_mode: ColorMode,
@@ -277,6 +278,7 @@ impl Default for HeightmapApp {
             erosion_deposition: 0.1,
             erosion_erosion_speed: 0.3,
             erosion_evaporation: 0.02,
+            erosion_radius: 3,
             blur_enabled: false,
             blur_sigma: 1.5,
             percentile_enabled: false,
@@ -647,29 +649,26 @@ impl HeightmapApp {
         let gravity = 10.0_f32;
         let max_steps = 64_usize;
         let min_slope = 0.001_f32;
+        let radius = self.erosion_radius;
 
-        // 1. Usar un PRNG más rápido como XorShift o SmallRng si no necesitas seguridad criptográfica
         let mut rng = rand::rngs::SmallRng::seed_from_u64(self.seed as u64);
-
-        // 2. Ejecutar gotas en paralelo (opcional, requiere que 'data' use Atomics o un Mutex por zona,
-        // pero lo más simple es procesar por lotes o usar una estructura de datos concurrente)
 
         for _ in 0..self.erosion_droplets {
             let mut x = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
             let mut y = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
-            let mut dir_x = 0.0;
-            let mut dir_y = 0.0;
-            let mut speed = 1.0;
-            let mut water = 1.0;
-            let mut sediment = 0.0;
+            let mut dir_x = 0.0f32;
+            let mut dir_y = 0.0f32;
+            let mut speed = 1.0f32;
+            let mut water = 1.0f32;
+            let mut sediment = 0.0f32;
+
+            // #2: Leer gradiente y altura de la posición inicial una sola vez
+            let (mut cur_gx, mut cur_gy, mut h_old) = self.get_gradient_and_height(data, n, x, y);
 
             for _ in 0..max_steps {
-                // Optimización: Calcular gradiente y altura en un solo paso (Bilineal)
-                let (gx, gy, h_old) = self.get_gradient_and_height(data, n, x, y);
-
-                // Inercia
-                dir_x = dir_x * inertia - gx * (1.0 - inertia);
-                dir_y = dir_y * inertia - gy * (1.0 - inertia);
+                // Inercia (usando gradiente cacheado)
+                dir_x = dir_x * inertia - cur_gx * (1.0 - inertia);
+                dir_y = dir_y * inertia - cur_gy * (1.0 - inertia);
 
                 let len_sq = dir_x * dir_x + dir_y * dir_y;
                 if len_sq > 0.0 {
@@ -681,15 +680,14 @@ impl HeightmapApp {
                 let nx = x + dir_x;
                 let ny = y + dir_y;
 
-                // Salida de límites
                 if nx < 1.0 || nx >= (n - 2) as f32 || ny < 1.0 || ny >= (n - 2) as f32 {
                     break;
                 }
 
-                let (_, _, h_new) = self.get_gradient_and_height(data, n, nx, ny);
+                // #2: Leer siguiente posición una vez; guardar para la próxima iteración
+                let (next_gx, next_gy, h_new) = self.get_gradient_and_height(data, n, nx, ny);
                 let delta_h = h_new - h_old;
 
-                // Capacidad de sedimento
                 let c = (-delta_h).max(min_slope) * speed * water * capacity;
 
                 if sediment > c || delta_h > 0.0 {
@@ -699,20 +697,25 @@ impl HeightmapApp {
                         (sediment - c) * deposit_k
                     };
                     sediment -= deposit;
-                    self.hyd_deposit_bilinear(data, n, x, y, deposit);
+                    // #3: Depositar distribuido en radio
+                    self.deposit_with_radius(data, n, x, y, deposit, radius);
                 } else {
-                    let amount = ((c - sediment) * erode_k).min(-delta_h);
-                    let amount = amount.max(0.0);
+                    let amount = ((c - sediment) * erode_k).min(-delta_h).max(0.0);
                     sediment += amount;
-                    // Erosión distribuida bilinealmente para evitar artefactos de "picos"
-                    self.hyd_deposit_bilinear(data, n, x, y, -amount);
+                    // #3: Erosionar distribuido en radio
+                    self.deposit_with_radius(data, n, x, y, -amount, radius);
                 }
 
-                // Actualizar física
-                speed = (speed * speed + delta_h.abs() * gravity).sqrt();
+                // #1: Física correcta de velocidad — subir cuesta ralentiza la gota
+                speed = (speed * speed - delta_h * gravity).max(0.0).sqrt().max(0.01);
                 water *= 1.0 - evaporate;
                 x = nx;
                 y = ny;
+
+                // #2: Actualizar caché para la siguiente iteración
+                cur_gx = next_gx;
+                cur_gy = next_gy;
+                h_old = h_new;
 
                 if water < 0.01 {
                     break;
@@ -720,12 +723,57 @@ impl HeightmapApp {
             }
         }
 
-        // Re-normalize to 0..1 after erosion shifts the range
         let min = data.iter().cloned().fold(f32::MAX, f32::min);
         let max = data.iter().cloned().fold(f32::MIN, f32::max);
         let range = (max - min).max(1e-10);
         for v in data.iter_mut() {
             *v = (*v - min) / range;
+        }
+    }
+
+    fn deposit_with_radius(
+        &self,
+        data: &mut Vec<f32>,
+        n: usize,
+        x: f32,
+        y: f32,
+        amount: f32,
+        radius: usize,
+    ) {
+        if radius == 0 {
+            self.hyd_deposit_bilinear(data, n, x, y, amount);
+            return;
+        }
+
+        let xi = x as i32;
+        let yi = y as i32;
+        let r = radius as i32;
+        let frac_x = x - xi as f32;
+        let frac_y = y - yi as f32;
+
+        let mut cells: Vec<(usize, f32)> = Vec::with_capacity((2 * radius + 1).pow(2));
+        let mut total_weight = 0.0f32;
+
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let cx = xi + dx;
+                let cy = yi + dy;
+                if cx < 0 || cy < 0 || cx >= n as i32 || cy >= n as i32 {
+                    continue;
+                }
+                let dist = ((dx as f32 - frac_x).powi(2) + (dy as f32 - frac_y).powi(2)).sqrt();
+                let w = (radius as f32 - dist).max(0.0);
+                if w > 0.0 {
+                    total_weight += w;
+                    cells.push((cy as usize * n + cx as usize, w));
+                }
+            }
+        }
+
+        if total_weight > 0.0 {
+            for (idx, w) in cells {
+                data[idx] += amount * w / total_weight;
+            }
         }
     }
 
