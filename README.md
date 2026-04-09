@@ -372,6 +372,8 @@ La ruta base se escribe en el campo de texto. Los botones derivan sus rutas del 
 | 📐 Slope map | `<nombre>_slope.png` | PNG 8-bit con la magnitud del gradiente normalizada. |
 | 💧 Wetness map | `<nombre>_wetness.png` | PNG 8-bit con la acumulación de flujo de agua. |
 | 📦 OBJ | `<nombre>.obj` | Mesh triangulado 3D importable en Blender, Unity, Unreal, etc. |
+| 🗺 Control map | `<nombre>_control.png` | PNG RGBA8 con zonas de textura para Terrain3D (Godot). |
+| 🎨 Color map | `<nombre>_color.png` | PNG RGBA8 con colores naturales basados en altura, pendiente y humedad. |
 
 ### Normal map
 
@@ -431,6 +433,57 @@ La normalización final aplica `sqrt` para comprimir el extremo alto y revelar m
 Útil para colocar vegetación densa, barro, o agua en engines; también como máscara de mezcla de texturas húmedo/seco.
 
 > El mapa de humedad siempre se genera usando los parámetros de erosión actuales (número de gotas, inertia, evaporación). Si la erosión hidráulica está desactivada en el pipeline, el mapa sigue siendo calculado para exportación.
+
+### Terrain3D (Godot)
+
+Exporta los dos archivos auxiliares que el plugin [Terrain3D](https://github.com/TokisanGames/Terrain3D) necesita además del heightmap:
+
+#### Control map
+
+Imagen RGBA8 donde cada píxel empaqueta un `uint32` con el layout de bits de Terrain3D:
+
+```
+bits 31-27 → base texture index (0-31)
+bit  0     → navigation enabled
+```
+
+El índice de textura se asigna por zona según altura y pendiente:
+
+| Índice | Zona | Condición |
+|--------|------|-----------|
+| 0 | Hierba / suelo | resto de píxeles |
+| 1 | Arena / tierra baja | `height < Low thresh` |
+| 2 | Roca | `slope > Slope thresh` (tiene prioridad) |
+| 3 | Nieve | `height > High thresh` |
+
+Los tres sliders configuran los umbrales:
+
+| Slider | Default | Efecto |
+|--------|---------|--------|
+| Slope → rock | 0.55 | Pendiente normalizada a partir de la cual se asigna roca. |
+| High → snow | 0.80 | Altura normalizada a partir de la cual se asigna nieve. |
+| Low → sand | 0.20 | Altura normalizada por debajo de la cual se asigna arena. |
+
+En Terrain3D, los índices 0-3 se mapean a los slots de textura del plugin. Asigna en el editor qué textura va en cada slot (hierba, arena, roca, nieve).
+
+#### Color map
+
+Imagen RGBA8 con un color natural por píxel derivado de altura, pendiente y wetness. Se usa como tint de vértice en Terrain3D para añadir variación de color sin más texturas.
+
+| Zona | Color base | Modulación |
+|------|-----------|------------|
+| Roca | Gris cálido | Altura aclara levemente |
+| Nieve | Blanco azulado | Altura añade brillo |
+| Arena | Marrón arenoso | Altura aclara |
+| Hierba | Verde | Wetness oscurece y desatura |
+
+**Flujo de trabajo con Terrain3D:**
+
+1. Exportar `_16.png` (heightmap) + `_control.png` + `_color.png`.
+2. En el importer de Terrain3D: asignar los tres archivos a Height File, Control File Name y Color File Name respectivamente.
+3. Configurar R 16 Range (X=0.0, Y=altura máxima en metros) y R 16 Size (resolución exportada).
+4. Activar Run Import y guardar la escena.
+5. En el editor del plugin, asignar texturas a los slots 0-3.
 
 ### OBJ export
 

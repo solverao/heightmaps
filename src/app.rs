@@ -1,5 +1,5 @@
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions};
-use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
+use image::{GrayImage, ImageBuffer, Luma, Rgb, Rgba, RgbImage, RgbaImage};
 use noise::{
     BasicMulti, Billow, Fbm, HybridMulti, MultiFractal, NoiseFn, OpenSimplex, Perlin, RidgedMulti,
     SuperSimplex, Value, Worley,
@@ -311,6 +311,11 @@ pub struct HeightmapApp {
     pub batch_y_max: i32,
     pub batch_status: Option<(String, bool)>,
 
+    // Terrain3D control map thresholds
+    pub t3d_slope_thresh: f32,  // slope above this → rock texture (index 2)
+    pub t3d_high_thresh: f32,   // height above this → snow texture (index 3)
+    pub t3d_low_thresh: f32,    // height below this → sand/dirt texture (index 1)
+
     // Status
     pub last_gen_ms: f64,
 }
@@ -407,6 +412,9 @@ impl Default for HeightmapApp {
             batch_y_min: 0,
             batch_y_max: 2,
             batch_status: None,
+            t3d_slope_thresh: 0.55,
+            t3d_high_thresh: 0.80,
+            t3d_low_thresh: 0.20,
             last_gen_ms: 0.0,
         }
     }
@@ -1542,5 +1550,101 @@ impl HeightmapApp {
             Rgb([r, g, b])
         });
         img.save(&path).map_err(|e| format!("Error: {e}"))
+    }
+
+    // ── Terrain3D control map ────────────────────────────────────────────────
+    /// Exporta un control map compatible con Terrain3D (Godot).
+    ///
+    /// Cada pixel empaqueta un uint32 en RGBA8 con el layout de bits de Terrain3D:
+    ///   bits 31-27 → base texture index (0-31)
+    ///   bit  0     → navigation enabled
+    ///
+    /// Zonas por defecto (ajustables con los sliders):
+    ///   slope > t3d_slope_thresh  → índice 2 (roca)
+    ///   height > t3d_high_thresh  → índice 3 (nieve)
+    ///   height < t3d_low_thresh   → índice 1 (arena/tierra)
+    ///   resto                     → índice 0 (hierba/suelo)
+    pub fn export_terrain3d_control(&mut self, path: PathBuf) -> Result<(), String> {
+        let res = self.export_resolution;
+        let data = self.generate(res);
+        let size = res as usize;
+        let slope = self.compute_slope_map(&data, size);
+
+        let slope_thresh = self.t3d_slope_thresh;
+        let high_thresh = self.t3d_high_thresh;
+        let low_thresh = self.t3d_low_thresh;
+
+        let img = RgbaImage::from_fn(res, res, |x, y| {
+            let i = (y * res + x) as usize;
+            let h = data[i];
+            let s = slope[i];
+
+            let tex: u32 = if s > slope_thresh {
+                2
+            } else if h > high_thresh {
+                3
+            } else if h < low_thresh {
+                1
+            } else {
+                0
+            };
+
+            // Empaquetar: base_tex en bits 31-27, nav en bit 0
+            let ctrl: u32 = (tex << 27) | 1;
+            Rgba([
+                ((ctrl >> 24) & 0xFF) as u8,
+                ((ctrl >> 16) & 0xFF) as u8,
+                ((ctrl >> 8) & 0xFF) as u8,
+                (ctrl & 0xFF) as u8,
+            ])
+        });
+        img.save(&path).map_err(|e| format!("Error control: {e}"))
+    }
+
+    // ── Terrain3D color map ──────────────────────────────────────────────────
+    /// Exporta un color map RGBA8 con colores naturales basados en altura,
+    /// pendiente y humedad. Se usa como tint de vértice en Terrain3D.
+    pub fn export_terrain3d_color(&mut self, path: PathBuf) -> Result<(), String> {
+        let res = self.export_resolution;
+        let data = self.generate(res);
+        let size = res as usize;
+        let slope = self.compute_slope_map(&data, size);
+        let wetness = self.erode_wetness_only(&data, size);
+
+        let slope_thresh = self.t3d_slope_thresh;
+        let high_thresh = self.t3d_high_thresh;
+        let low_thresh = self.t3d_low_thresh;
+
+        let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u8;
+
+        let img = RgbaImage::from_fn(res, res, |x, y| {
+            let i = (y * res + x) as usize;
+            let h = data[i];
+            let s = slope[i];
+            let w = wetness[i];
+
+            let (r, g, b): (f32, f32, f32) = if s > slope_thresh {
+                // Roca: gris con tinte cálido
+                let v = 0.42 + h * 0.18;
+                (v, v * 0.96, v * 0.90)
+            } else if h > high_thresh {
+                // Nieve: blanco azulado
+                (0.90 + h * 0.08, 0.92 + h * 0.06, 0.95 + h * 0.04)
+            } else if h < low_thresh {
+                // Arena/tierra baja
+                (0.72 + h * 0.15, 0.60 + h * 0.12, 0.38 + h * 0.10)
+            } else {
+                // Hierba/suelo: verde modulado por humedad y altura
+                let damp = w * 0.12;
+                (
+                    0.22 + h * 0.10 - damp * 0.5,
+                    0.38 + h * 0.14 - damp,
+                    0.14 + h * 0.06 + w * 0.04,
+                )
+            };
+
+            Rgba([to_u8(r), to_u8(g), to_u8(b), 255])
+        });
+        img.save(&path).map_err(|e| format!("Error color: {e}"))
     }
 }

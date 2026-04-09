@@ -1026,6 +1026,51 @@ impl eframe::App for HeightmapApp {
                         }
                     });
 
+                    // ── Terrain3D ──
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.label("Terrain3D (Godot)");
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Slope → rock");
+                        ui.add(egui::Slider::new(&mut self.t3d_slope_thresh, 0.1..=0.9).step_by(0.05));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("High  → snow");
+                        ui.add(egui::Slider::new(&mut self.t3d_high_thresh, 0.4..=0.99).step_by(0.05));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Low   → sand");
+                        ui.add(egui::Slider::new(&mut self.t3d_low_thresh, 0.01..=0.5).step_by(0.05));
+                    });
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        let path_ctrl = dir.join(format!("{stem}_control.png"));
+                        if ui
+                            .button("🗺 Control map")
+                            .on_hover_text(path_ctrl.display().to_string())
+                            .clicked()
+                        {
+                            self.export_status =
+                                Some(match self.export_terrain3d_control(path_ctrl.clone()) {
+                                    Ok(()) => (format!("✔ Control guardado: {}", path_ctrl.display()), true),
+                                    Err(e) => (format!("✖ Error: {e}"), false),
+                                });
+                        }
+                        let path_color = dir.join(format!("{stem}_color.png"));
+                        if ui
+                            .button("🎨 Color map")
+                            .on_hover_text(path_color.display().to_string())
+                            .clicked()
+                        {
+                            self.export_status =
+                                Some(match self.export_terrain3d_color(path_color.clone()) {
+                                    Ok(()) => (format!("✔ Color guardado: {}", path_color.display()), true),
+                                    Err(e) => (format!("✖ Error: {e}"), false),
+                                });
+                        }
+                    });
+
                     if let Some((msg, ok)) = &self.export_status {
                         ui.add_space(4.0);
                         let color = if *ok {
