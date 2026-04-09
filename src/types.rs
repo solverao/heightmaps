@@ -10,6 +10,7 @@ pub enum NoiseType {
     SuperSimplex,
     Value,
     Worley,
+    VoronoiEdge,
 }
 
 impl NoiseType {
@@ -19,6 +20,7 @@ impl NoiseType {
         Self::SuperSimplex,
         Self::Value,
         Self::Worley,
+        Self::VoronoiEdge,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -28,6 +30,7 @@ impl NoiseType {
             Self::SuperSimplex => "Super Simplex",
             Self::Value => "Value",
             Self::Worley => "Worley / Cellular",
+            Self::VoronoiEdge => "Voronoi Edge (F2\u{2212}F1)",
         }
     }
 }
@@ -212,6 +215,9 @@ pub struct Preset {
     pub warp_enabled: bool,
     pub warp_strength: f64,
     pub warp_frequency: f64,
+    pub warp2_enabled: bool,
+    pub warp2_strength: f64,
+    pub warp2_frequency: f64,
     pub seamless_enabled: bool,
     pub layers: [Layer; 2],
     pub resolution: u32,
@@ -236,6 +242,10 @@ pub struct Preset {
     pub erosion_erosion_speed: f32,
     pub erosion_evaporation: f32,
     pub erosion_radius: usize,
+    pub erosion_mask_enabled: bool,
+    pub erosion_mask_type: ErosionMaskType,
+    pub erosion_mask_min: f32,
+    pub erosion_mask_max: f32,
     pub thermal_enabled: bool,
     pub thermal_talus: f32,
     pub thermal_iterations: u32,
@@ -281,6 +291,25 @@ impl BlendMode {
             Self::Max => "Max",
             Self::Min => "Min",
             Self::Screen => "Screen",
+        }
+    }
+}
+
+// ── Erosion mask type ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ErosionMaskType {
+    Height,
+    Slope,
+}
+
+impl ErosionMaskType {
+    pub const ALL: &'static [Self] = &[Self::Height, Self::Slope];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Height => "Altura",
+            Self::Slope => "Pendiente",
         }
     }
 }

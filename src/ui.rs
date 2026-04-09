@@ -3,7 +3,9 @@ use rand::Rng;
 use std::path::PathBuf;
 
 use crate::app::HeightmapApp;
-use crate::types::{BlendMode, ColorMode, FalloffShape, FractalType, NoiseType, PostProcess};
+use crate::types::{
+    BlendMode, ColorMode, ErosionMaskType, FalloffShape, FractalType, NoiseType, PostProcess,
+};
 use crate::view3d;
 
 const HIST_BINS: usize = 64;
@@ -197,6 +199,33 @@ impl eframe::App for HeightmapApp {
                             .changed()
                         {
                             self.dirty = true;
+                        }
+
+                        ui.add_space(4.0);
+                        if ui
+                            .checkbox(&mut self.warp2_enabled, "2ª pasada (warp-of-warp)")
+                            .changed()
+                        {
+                            self.dirty = true;
+                        }
+                        if self.warp2_enabled {
+                            ui.label("Strength 2");
+                            if ui
+                                .add(egui::Slider::new(&mut self.warp2_strength, 0.0..=2.0))
+                                .changed()
+                            {
+                                self.dirty = true;
+                            }
+                            ui.label("Frequency 2");
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.warp2_frequency, 0.1..=10.0)
+                                        .logarithmic(true),
+                                )
+                                .changed()
+                            {
+                                self.dirty = true;
+                            }
                         }
                     }
 
@@ -503,6 +532,57 @@ impl eframe::App for HeightmapApp {
                                 return;
                             }
 
+                            ui.add_space(4.0);
+                            ui.separator();
+                            if ui
+                                .checkbox(&mut self.erosion_mask_enabled, "Máscara de erosión")
+                                .changed()
+                            {
+                                self.dirty = true;
+                            }
+                            if self.erosion_mask_enabled {
+                                ui.label("Tipo de máscara");
+                                egui::ComboBox::from_id_salt("erosion_mask_type")
+                                    .selected_text(self.erosion_mask_type.label())
+                                    .show_ui(ui, |ui| {
+                                        for &mt in ErosionMaskType::ALL {
+                                            if ui
+                                                .selectable_value(
+                                                    &mut self.erosion_mask_type,
+                                                    mt,
+                                                    mt.label(),
+                                                )
+                                                .changed()
+                                            {
+                                                self.dirty = true;
+                                            }
+                                        }
+                                    });
+                                let label = match self.erosion_mask_type {
+                                    ErosionMaskType::Height => ("Altura mín", "Altura máx"),
+                                    ErosionMaskType::Slope => ("Pendiente mín", "Pendiente máx"),
+                                };
+                                ui.label(label.0);
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut self.erosion_mask_min, 0.0..=1.0),
+                                    )
+                                    .changed()
+                                {
+                                    self.dirty = true;
+                                }
+                                ui.label(label.1);
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut self.erosion_mask_max, 0.0..=1.0),
+                                    )
+                                    .changed()
+                                {
+                                    self.dirty = true;
+                                }
+                                ui.weak("Solo erode dentro del rango. Aplica a erosión hidráulica y térmica.");
+                            }
+                            ui.separator();
                             ui.add_space(2.0);
                             ui.label("Gotas");
                             if ui

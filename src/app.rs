@@ -10,12 +10,59 @@ use rand::SeedableRng;
 use std::path::PathBuf; // Para paralelismo
 
 use crate::types::{
-    BlendMode, ColorMode, FalloffShape, FractalType, Layer, NoiseType, PostProcess, Preset,
+    BlendMode, ColorMode, ErosionMaskType, FalloffShape, FractalType, Layer, NoiseType,
+    PostProcess, Preset,
 };
 
 fn default_export_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     format!("{}/heightmap.png", home)
+}
+
+// ── Voronoi F2−F1 (edge distance) noise ────────────────────────────────────
+
+/// Hashes a grid cell (ix, iy, seed, component) → value in [0, 1].
+fn hash_cell(ix: i64, iy: i64, seed: u32, which: u32) -> f64 {
+    let mut h: u64 = (ix as u64)
+        .wrapping_mul(2_654_435_761)
+        ^ (iy as u64).wrapping_mul(805_459_861)
+        ^ (seed as u64).wrapping_mul(1_234_567_891)
+        ^ (which as u64).wrapping_mul(987_654_321);
+    // MurmurHash3 finalizer
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    h ^= h >> 33;
+    h as f64 / u64::MAX as f64
+}
+
+/// Returns F2 − F1 (edge distance), mapped to approximately [−1, 1].
+fn voronoi_edge_noise(fx: f64, fy: f64, seed: u32) -> f64 {
+    let ix = fx.floor() as i64;
+    let iy = fy.floor() as i64;
+
+    let mut f1 = f64::MAX;
+    let mut f2 = f64::MAX;
+
+    for dy in -2..=2i64 {
+        for dx in -2..=2i64 {
+            let cx = ix + dx;
+            let cy = iy + dy;
+            let px = cx as f64 + hash_cell(cx, cy, seed, 0);
+            let py = cy as f64 + hash_cell(cx, cy, seed, 1);
+            let d2 = (fx - px).powi(2) + (fy - py).powi(2);
+            if d2 < f1 {
+                f2 = f1;
+                f1 = d2;
+            } else if d2 < f2 {
+                f2 = d2;
+            }
+        }
+    }
+
+    // (F2 - F1) is in [0, ~1.5]; remap to [-1, 1] for compatibility with other noise
+    (f2.sqrt() - f1.sqrt()) * 2.0 - 0.5
 }
 
 // ── Sampler builder (free function) ────────────────────────────────────────
@@ -33,6 +80,14 @@ struct SamplerParams {
 }
 
 fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
+    // VoronoiEdge ignores fractal type — always raw F2-F1 distance
+    if p.noise_type == NoiseType::VoronoiEdge {
+        let seed = p.seed;
+        let freq = p.frequency;
+        let (ox, oy) = (p.offset_x, p.offset_y);
+        return Box::new(move |x, y| voronoi_edge_noise((x + ox) * freq, (y + oy) * freq, seed));
+    }
+
     let SamplerParams {
         seed: s,
         noise_type,
@@ -66,6 +121,10 @@ fn build_sampler_from(p: SamplerParams) -> Box<dyn Fn(f64, f64) -> f64> {
             NoiseType::Worley => {
                 let n = Worley::new(s);
                 Box::new(move |x, y| n.get([(x + offset_x) * freq, (y + offset_y) * freq]))
+            }
+            // Handled by early return above; unreachable
+            NoiseType::VoronoiEdge => {
+                Box::new(move |x, y| voronoi_edge_noise((x + offset_x) * freq, (y + offset_y) * freq, s))
             }
         },
         FractalType::Fbm => {
@@ -150,6 +209,11 @@ pub struct HeightmapApp {
     pub warp_strength: f64,
     pub warp_frequency: f64,
 
+    // Domain warp second pass
+    pub warp2_enabled: bool,
+    pub warp2_strength: f64,
+    pub warp2_frequency: f64,
+
     // Seamless tiling
     pub seamless_enabled: bool,
 
@@ -192,6 +256,12 @@ pub struct HeightmapApp {
     pub percentile_enabled: bool,
     pub percentile_low: f32,
     pub percentile_high: f32,
+
+    // Erosion mask
+    pub erosion_mask_enabled: bool,
+    pub erosion_mask_type: ErosionMaskType,
+    pub erosion_mask_min: f32,
+    pub erosion_mask_max: f32,
 
     // Hydraulic erosion
     pub erosion_enabled: bool,
@@ -264,6 +334,9 @@ impl Default for HeightmapApp {
             warp_enabled: false,
             warp_strength: 0.3,
             warp_frequency: 2.0,
+            warp2_enabled: false,
+            warp2_strength: 0.2,
+            warp2_frequency: 3.0,
             seamless_enabled: false,
             layers: [
                 Layer::default(),
@@ -292,6 +365,10 @@ impl Default for HeightmapApp {
             view3d_res: 64,
             view3d_data: Vec::new(),
             view3d_dirty: true,
+            erosion_mask_enabled: false,
+            erosion_mask_type: ErosionMaskType::Height,
+            erosion_mask_min: 0.3,
+            erosion_mask_max: 1.0,
             erosion_enabled: false,
             erosion_droplets: 30_000,
             erosion_inertia: 0.05,
@@ -374,8 +451,10 @@ impl HeightmapApp {
         let seamless = self.seamless_enabled;
         let warp_enabled = self.warp_enabled;
         let warp_strength = self.warp_strength;
+        let warp2_enabled = self.warp2_enabled;
+        let warp2_strength = self.warp2_strength;
 
-        // ── Warp samplers ───────────────────────────────────────────────────
+        // ── Warp samplers (pass 1) ──────────────────────────────────────────
         let (warp_x, warp_y): (
             Option<Box<dyn Fn(f64, f64) -> f64>>,
             Option<Box<dyn Fn(f64, f64) -> f64>>,
@@ -386,6 +465,22 @@ impl HeightmapApp {
             (
                 Some(Box::new(move |x, y| nx.get([x, y]))),
                 Some(Box::new(move |x, y| ny.get([x, y]))),
+            )
+        } else {
+            (None, None)
+        };
+
+        // ── Warp samplers (pass 2) ──────────────────────────────────────────
+        let (warp2_x, warp2_y): (
+            Option<Box<dyn Fn(f64, f64) -> f64>>,
+            Option<Box<dyn Fn(f64, f64) -> f64>>,
+        ) = if warp_enabled && warp2_enabled {
+            let wf2 = self.warp2_frequency;
+            let nx2 = Fbm::<Perlin>::new(self.seed.wrapping_add(3001)).set_frequency(wf2);
+            let ny2 = Fbm::<Perlin>::new(self.seed.wrapping_add(4003)).set_frequency(wf2);
+            (
+                Some(Box::new(move |x, y| nx2.get([x, y]))),
+                Some(Box::new(move |x, y| ny2.get([x, y]))),
             )
         } else {
             (None, None)
@@ -425,12 +520,21 @@ impl HeightmapApp {
         // Using a macro avoids closure-capture lifetime issues while reusing logic.
         macro_rules! warped {
             ($f:expr, $px:expr, $py:expr) => {{
-                let (wx, wy) = match (&warp_x, &warp_y) {
+                // Pass 1
+                let (wx1, wy1) = match (&warp_x, &warp_y) {
                     (Some(fx), Some(fy)) => (
                         $px + fx($px, $py) * warp_strength,
                         $py + fy($px, $py) * warp_strength,
                     ),
                     _ => ($px, $py),
+                };
+                // Pass 2 (uses warped coords from pass 1 as input)
+                let (wx, wy) = match (&warp2_x, &warp2_y) {
+                    (Some(fx), Some(fy)) => (
+                        wx1 + fx(wx1, wy1) * warp2_strength,
+                        wy1 + fy(wx1, wy1) * warp2_strength,
+                    ),
+                    _ => (wx1, wy1),
                 };
                 $f(wx, wy)
             }};
@@ -550,12 +654,30 @@ impl HeightmapApp {
 
         // ── Hydraulic erosion ───────────────────────────────────────────────
         if self.erosion_enabled {
-            self.erode(&mut data, size);
+            if self.erosion_mask_enabled {
+                let pre = data.clone();
+                self.erode(&mut data, size);
+                let mask = self.build_erosion_mask(&pre, size);
+                for i in 0..data.len() {
+                    data[i] = pre[i] + (data[i] - pre[i]) * mask[i];
+                }
+            } else {
+                self.erode(&mut data, size);
+            }
         }
 
         // ── Thermal erosion ─────────────────────────────────────────────────
         if self.thermal_enabled {
-            self.thermal_erode(&mut data, size);
+            if self.erosion_mask_enabled {
+                let pre = data.clone();
+                self.thermal_erode(&mut data, size);
+                let mask = self.build_erosion_mask(&pre, size);
+                for i in 0..data.len() {
+                    data[i] = pre[i] + (data[i] - pre[i]) * mask[i];
+                }
+            } else {
+                self.thermal_erode(&mut data, size);
+            }
         }
 
         // ── Gaussian blur ────────────────────────────────────────────────────
@@ -939,6 +1061,54 @@ impl HeightmapApp {
         self.dirty = true;
     }
 
+    // ── Erosion mask ─────────────────────────────────────────────────────────
+    /// Returns a per-pixel weight in [0, 1]: 1 = full erosion, 0 = no erosion.
+    fn build_erosion_mask(&self, data: &[f32], size: usize) -> Vec<f32> {
+        let lo = self.erosion_mask_min;
+        let hi = self.erosion_mask_max.max(lo + 0.01);
+        let feather = ((hi - lo) * 0.05).max(0.005);
+
+        let smooth_edge = |v: f32, edge: f32, rising: bool| -> f32 {
+            let t = ((v - (edge - feather)) / (2.0 * feather)).clamp(0.0, 1.0);
+            let s = t * t * (3.0 - 2.0 * t);
+            if rising { s } else { 1.0 - s }
+        };
+
+        let weight = |v: f32| -> f32 {
+            if v <= lo - feather || v >= hi + feather {
+                0.0
+            } else if v >= lo && v <= hi {
+                1.0
+            } else if v < lo {
+                smooth_edge(v, lo, true)
+            } else {
+                smooth_edge(v, hi, false)
+            }
+        };
+
+        match self.erosion_mask_type {
+            ErosionMaskType::Height => data.iter().map(|&v| weight(v)).collect(),
+            ErosionMaskType::Slope => {
+                let mut mask = vec![0.0f32; size * size];
+                for y in 0..size {
+                    for x in 0..size {
+                        let get = |xi: i32, yi: i32| -> f32 {
+                            data[yi.clamp(0, size as i32 - 1) as usize * size
+                                + xi.clamp(0, size as i32 - 1) as usize]
+                        };
+                        let xi = x as i32;
+                        let yi = y as i32;
+                        let gx = get(xi + 1, yi) - get(xi - 1, yi);
+                        let gy = get(xi, yi + 1) - get(xi, yi - 1);
+                        let slope = (gx * gx + gy * gy).sqrt() * 0.5;
+                        mask[y * size + x] = weight(slope);
+                    }
+                }
+                mask
+            }
+        }
+    }
+
     // ── Thermal erosion ─────────────────────────────────────────────────────
     fn thermal_erode(&self, data: &mut Vec<f32>, size: usize) {
         let talus = self.thermal_talus;
@@ -1042,6 +1212,9 @@ impl HeightmapApp {
             warp_enabled: self.warp_enabled,
             warp_strength: self.warp_strength,
             warp_frequency: self.warp_frequency,
+            warp2_enabled: self.warp2_enabled,
+            warp2_strength: self.warp2_strength,
+            warp2_frequency: self.warp2_frequency,
             seamless_enabled: self.seamless_enabled,
             layers: [
                 Layer {
@@ -1077,6 +1250,10 @@ impl HeightmapApp {
             falloff_edge_noise: self.falloff_edge_noise,
             falloff_noise_freq: self.falloff_noise_freq,
             falloff_exponent: self.falloff_exponent,
+            erosion_mask_enabled: self.erosion_mask_enabled,
+            erosion_mask_type: self.erosion_mask_type,
+            erosion_mask_min: self.erosion_mask_min,
+            erosion_mask_max: self.erosion_mask_max,
             erosion_enabled: self.erosion_enabled,
             erosion_droplets: self.erosion_droplets,
             erosion_inertia: self.erosion_inertia,
@@ -1121,6 +1298,9 @@ impl HeightmapApp {
         self.warp_enabled = p.warp_enabled;
         self.warp_strength = p.warp_strength;
         self.warp_frequency = p.warp_frequency;
+        self.warp2_enabled = p.warp2_enabled;
+        self.warp2_strength = p.warp2_strength;
+        self.warp2_frequency = p.warp2_frequency;
         self.seamless_enabled = p.seamless_enabled;
         self.layers = p.layers;
         self.resolution = p.resolution;
@@ -1137,6 +1317,10 @@ impl HeightmapApp {
         self.falloff_edge_noise = p.falloff_edge_noise;
         self.falloff_noise_freq = p.falloff_noise_freq;
         self.falloff_exponent = p.falloff_exponent;
+        self.erosion_mask_enabled = p.erosion_mask_enabled;
+        self.erosion_mask_type = p.erosion_mask_type;
+        self.erosion_mask_min = p.erosion_mask_min;
+        self.erosion_mask_max = p.erosion_mask_max;
         self.erosion_enabled = p.erosion_enabled;
         self.erosion_droplets = p.erosion_droplets;
         self.erosion_inertia = p.erosion_inertia;

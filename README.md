@@ -44,7 +44,7 @@ Cada vez que un parámetro cambia, `generate()` ejecuta este pipeline en orden:
 
 ### Noise algorithm
 
-Algoritmo base de ruido. Se combina con el fractal combiner.
+Algoritmo base de ruido. Se combina con el fractal combiner, excepto **Voronoi Edge** que siempre se muestrea directamente.
 
 | Algoritmo | Descripción |
 |-----------|-------------|
@@ -52,7 +52,8 @@ Algoritmo base de ruido. Se combina con el fractal combiner.
 | Open Simplex | Variante de simplex sin patrones en cuadrícula. |
 | Super Simplex | Mejora de Open Simplex, más suave. |
 | Value | Interpolación de valores aleatorios. Aspecto más "blocky". |
-| Worley / Cellular | Basado en distancia a puntos aleatorios. Produce celdas orgánicas. |
+| Worley / Cellular | Basado en distancia F1 a puntos aleatorios. Produce celdas orgánicas. |
+| Voronoi Edge (F2−F1) | Distancia al borde de celda Voronoi. Produce redes de crestas finas sobre fondo plano. Ideal para arrecifes, mesas, grietas y cracks. Ignora el Fractal combiner (siempre es raw). |
 
 ### Fractal combiner
 
@@ -98,6 +99,23 @@ Produce formas orgánicas complejas: costas irregulares, cuevas, penínsulas. Co
 |-----------|--------|
 | Strength | Magnitud de la distorsión. 0 = sin efecto, 2.0 = distorsión extrema. |
 | Warp frequency | Escala del ruido de distorsión. Baja = curvas grandes, alta = detalles pequeños. |
+
+### 2ª pasada (warp-of-warp)
+
+Opcional. Aplica un segundo domain warp usando las coordenadas ya distorsionadas del primer pase como entrada:
+
+```
+(wx1, wy1) = warp_pass1(x, y)
+(wx2, wy2) = warp_pass2(wx1, wy1)   ← las coordenadas del pase 1 son la entrada
+resultado   = noise(wx2, wy2)
+```
+
+El encadenamiento produce espirales, penínsulas retorcidas y formas que ningún warp simple puede generar. Solo disponible cuando el primer pase está activo.
+
+| Parámetro | Efecto |
+|-----------|--------|
+| Strength 2 | Magnitud de la segunda distorsión. Puede ser menor que la primera para añadir detalle sin romper la estructura. |
+| Frequency 2 | Escala del segundo ruido de distorsión. Alta frecuencia = textura fina sobre la distorsión grande. |
 
 ## Seamless
 
@@ -204,6 +222,35 @@ Al finalizar, el mapa se renormaliza a [0, 1].
 | Deposición | 0.01 – 1 | Fracción depositada cuando la gota va lenta. Alto = depósitos más bruscos. |
 | Velocidad de erosión | 0.01 – 1 | Agresividad del excavado. |
 | Evaporación | 0.001 – 0.1 | Tasa de pérdida de agua. Bajo = gotas más largas (ríos más largos). |
+| Radio de erosión | 0 – 6 | Distribución del sedimento depositado/excavado. 0 = bilineal puntual, >0 = radio de influencia en píxeles. |
+
+> La **máscara de erosión** (sección siguiente) limita el área de efecto tanto de la erosión hidráulica como de la térmica.
+
+### Máscara de erosión
+
+Limita el efecto de la erosión (hidráulica y térmica) a una zona definida por altura o pendiente. El terreno fuera de la zona queda sin modificar; la transición entre zona activa y zona protegida usa un smoothstep de ~5% del rango para evitar bordes duros.
+
+**Implementación:** se guarda una copia del mapa antes de erosionar, se aplica la erosión completa, y luego se hace un blend píxel a píxel:
+
+```
+resultado[i] = pre[i] + (eroded[i] - pre[i]) * mask_weight[i]
+```
+
+Donde `mask_weight` ∈ [0, 1] según el tipo de máscara.
+
+| Parámetro | Efecto |
+|-----------|--------|
+| Tipo | **Altura** — la máscara se evalúa sobre el valor de altura de cada píxel. **Pendiente** — se evalúa sobre la magnitud del gradiente (Sobel 2×2 normalizado). |
+| Mín / Máx | Rango dentro del cual `mask_weight = 1`. Fuera del rango, `mask_weight = 0`. |
+
+**Ejemplos de uso:**
+
+| Tipo | Mín | Máx | Efecto |
+|------|-----|-----|--------|
+| Altura | 0.35 | 1.0 | Solo erode tierras emergidas; el mar permanece plano. |
+| Altura | 0.0 | 0.65 | Solo erode las zonas bajas; los picos quedan intactos. |
+| Pendiente | 0.2 | 1.0 | Solo erode donde hay pendiente pronunciada; las mesetas no se tocan. |
+| Pendiente | 0.0 | 0.15 | Solo erode zonas casi planas; preserva las laderas. |
 
 ---
 
