@@ -970,6 +970,19 @@ impl eframe::App for HeightmapApp {
                                 Err(e) => e,
                             });
                         }
+                        let path_exr = dir.join(format!("{stem}.exr"));
+                        if ui
+                            .button("💾 EXR")
+                            .on_hover_text(path_exr.display().to_string())
+                            .clicked()
+                        {
+                            self.export_status = Some(match self.export_exr(path_exr.clone()) {
+                                Ok(()) => format!("Guardado EXR: {}", path_exr.display()),
+                                Err(e) => e,
+                            });
+                        }
+                    });
+                    ui.horizontal(|ui| {
                         let path_nm = dir.join(format!("{stem}_normal.png"));
                         if ui
                             .button("🗺 Normal map")
@@ -979,6 +992,30 @@ impl eframe::App for HeightmapApp {
                             self.export_status =
                                 Some(match self.export_normal_png(path_nm.clone()) {
                                     Ok(()) => format!("Guardado normal: {}", path_nm.display()),
+                                    Err(e) => e,
+                                });
+                        }
+                        let path_slope = dir.join(format!("{stem}_slope.png"));
+                        if ui
+                            .button("📐 Slope map")
+                            .on_hover_text(path_slope.display().to_string())
+                            .clicked()
+                        {
+                            self.export_status =
+                                Some(match self.export_slope_png(path_slope.clone()) {
+                                    Ok(()) => format!("Guardado slope: {}", path_slope.display()),
+                                    Err(e) => e,
+                                });
+                        }
+                        let path_wet = dir.join(format!("{stem}_wetness.png"));
+                        if ui
+                            .button("💧 Wetness map")
+                            .on_hover_text(path_wet.display().to_string())
+                            .clicked()
+                        {
+                            self.export_status =
+                                Some(match self.export_wetness_png(path_wet.clone()) {
+                                    Ok(()) => format!("Guardado wetness: {}", path_wet.display()),
                                     Err(e) => e,
                                 });
                         }

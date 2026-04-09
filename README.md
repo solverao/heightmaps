@@ -367,7 +367,10 @@ La ruta base se escribe en el campo de texto. Los botones derivan sus rutas del 
 |-------|-----------------|-------------|
 | 💾 8-bit | `<nombre>.png` | PNG escala de grises 8 bits (0 – 255). |
 | 💾 16-bit | `<nombre>_16.png` | PNG escala de grises 16 bits (0 – 65535). Mayor precisión para engines. |
+| 💾 EXR | `<nombre>.exr` | EXR 32-bit float RGB. Máxima precisión, sin pérdida de rango dinámico. |
 | 🗺 Normal map | `<nombre>_normal.png` | PNG RGB con la normal derivada del heightmap. |
+| 📐 Slope map | `<nombre>_slope.png` | PNG 8-bit con la magnitud del gradiente normalizada. |
+| 💧 Wetness map | `<nombre>_wetness.png` | PNG 8-bit con la acumulación de flujo de agua. |
 | 📦 OBJ | `<nombre>.obj` | Mesh triangulado 3D importable en Blender, Unity, Unreal, etc. |
 
 ### Normal map
@@ -384,6 +387,50 @@ B  = (Nz + 1) / 2 * 255
 ```
 
 El parámetro **Normal map strength** (1 – 32) escala la magnitud de los gradientes. Valores altos resaltan detalles finos, valores bajos producen normales más suaves.
+
+### EXR (32-bit float)
+
+Exporta el heightmap como imagen EXR con canales R, G y B iguales (valor de altura en coma flotante de 32 bits). No hay cuantización ni pérdida de rango dinámico.
+
+```
+R = G = B = h  ∈ [0.0, 1.0]
+```
+
+Compatible con Unreal Engine (importación de heightmap), Blender, Houdini y cualquier herramienta que soporte EXR. Usa la misma resolución que los PNG de exportación.
+
+### Slope map
+
+Calcula la magnitud del gradiente en cada píxel mediante diferencias centrales, y normaliza al valor máximo:
+
+```
+gx = (h[x+1,y] − h[x−1,y]) / 2  ×  size
+gy = (h[x,y+1] − h[x,y−1]) / 2  ×  size
+slope = sqrt(gx² + gy²)
+slope_norm = slope / max(slope)
+```
+
+Los píxeles claros son zonas de pendiente pronunciada (acantilados, laderas); los oscuros son zonas planas (valles, mesetas). Útil para:
+- Mezcla de texturas en engines (roca en laderas, hierba en zonas planas).
+- Máscaras procedurales de vegetación o nieve.
+- Debug visual de la erosión.
+
+### Wetness map
+
+Simula el flujo de agua sobre el heightmap generado y acumula la cantidad de agua que pasa por cada píxel. Usa la misma lógica de gotas que la erosión hidráulica (inertia, evaporación, gravedad) pero en modo solo-lectura: los parámetros de erosión configurados afectan las trayectorias.
+
+```
+por cada gota, en cada paso:
+  wetness[x,y] += water   (distribuido bilinealmente)
+  water         *= (1 - evaporación)
+```
+
+La normalización final aplica `sqrt` para comprimir el extremo alto y revelar mejor los canales secundarios. El resultado:
+- **Claro** → cauces principales, fondos de valle, zonas de acumulación.
+- **Oscuro** → cimas, crestas, zonas de escorrentía rápida.
+
+Útil para colocar vegetación densa, barro, o agua en engines; también como máscara de mezcla de texturas húmedo/seco.
+
+> El mapa de humedad siempre se genera usando los parámetros de erosión actuales (número de gotas, inertia, evaporación). Si la erosión hidráulica está desactivada en el pipeline, el mapa sigue siendo calculado para exportación.
 
 ### OBJ export
 
@@ -458,3 +505,4 @@ Los parámetros de exportación, resolución, erosión y vista 3D no se tocan.
 | rand | 0.8 | RNG para seed aleatorio y posición de gotas de erosión. |
 | serde | 1 | Serialización/deserialización para presets. |
 | serde_json | 1 | Formato JSON para archivos de preset. |
+| exr (feature) | — | Codec EXR integrado en el crate `image`. Habilitado con `features = ["exr"]`. |

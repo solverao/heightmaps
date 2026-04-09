@@ -1370,6 +1370,140 @@ impl HeightmapApp {
         Ok(count)
     }
 
+    // ── EXR export (32-bit float) ────────────────────────────────────────────
+    pub fn export_exr(&mut self, path: PathBuf) -> Result<(), String> {
+        let res = self.export_resolution;
+        let data = self.generate(res);
+        // EXR requires Rgb<f32>; store the heightmap in all three channels
+        // so engines that read R, G, or luminance all get the correct value.
+        let img: ImageBuffer<Rgb<f32>, Vec<f32>> = ImageBuffer::from_fn(res, res, |x, y| {
+            let v = data[(y * res + x) as usize];
+            Rgb([v, v, v])
+        });
+        img.save(&path).map_err(|e| format!("Error EXR: {e}"))
+    }
+
+    // ── Slope map export ─────────────────────────────────────────────────────
+    pub fn export_slope_png(&mut self, path: PathBuf) -> Result<(), String> {
+        let res = self.export_resolution;
+        let data = self.generate(res);
+        let size = res as usize;
+        let slope = self.compute_slope_map(&data, size);
+        let img = GrayImage::from_fn(res, res, |x, y| {
+            Luma([(slope[(y * res + x) as usize] * 255.0) as u8])
+        });
+        img.save(&path).map_err(|e| format!("Error slope: {e}"))
+    }
+
+    fn compute_slope_map(&self, data: &[f32], size: usize) -> Vec<f32> {
+        let mut slope = vec![0.0f32; size * size];
+        for y in 0..size {
+            for x in 0..size {
+                let get = |xi: i32, yi: i32| -> f32 {
+                    data[yi.clamp(0, size as i32 - 1) as usize * size
+                        + xi.clamp(0, size as i32 - 1) as usize]
+                };
+                let xi = x as i32;
+                let yi = y as i32;
+                // Central differences, scaled so pixel spacing = 1/size
+                let gx = (get(xi + 1, yi) - get(xi - 1, yi)) * 0.5 * size as f32;
+                let gy = (get(xi, yi + 1) - get(xi, yi - 1)) * 0.5 * size as f32;
+                slope[y * size + x] = (gx * gx + gy * gy).sqrt();
+            }
+        }
+        let max = slope.iter().cloned().fold(0.0_f32, f32::max).max(1e-10);
+        slope.iter_mut().for_each(|v| *v /= max);
+        slope
+    }
+
+    // ── Wetness map export ───────────────────────────────────────────────────
+    pub fn export_wetness_png(&mut self, path: PathBuf) -> Result<(), String> {
+        let res = self.export_resolution;
+        // Generate full heightmap (including erosion if enabled) — droplets
+        // follow already-carved channels for a more accurate wetness map.
+        let data = self.generate(res);
+        let size = res as usize;
+        let wetness = self.erode_wetness_only(&data, size);
+        let img = GrayImage::from_fn(res, res, |x, y| {
+            Luma([(wetness[(y * res + x) as usize] * 255.0) as u8])
+        });
+        img.save(&path).map_err(|e| format!("Error wetness: {e}"))
+    }
+
+    /// Runs the droplet simulation in read-only mode and accumulates per-pixel
+    /// water flow. Returns a normalized wetness buffer in [0, 1].
+    fn erode_wetness_only(&self, data: &[f32], size: usize) -> Vec<f32> {
+        let n = size;
+        let inertia = self.erosion_inertia;
+        let evaporate = self.erosion_evaporation;
+        let gravity = 10.0_f32;
+        let max_steps = 64_usize;
+
+        let mut wetness = vec![0.0f32; n * n];
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(self.seed as u64);
+
+        for _ in 0..self.erosion_droplets {
+            let mut x = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
+            let mut y = rng.gen::<f32>() * (n - 2) as f32 + 0.5;
+            let mut dir_x = 0.0f32;
+            let mut dir_y = 0.0f32;
+            let mut speed = 1.0f32;
+            let mut water = 1.0f32;
+            let (mut cur_gx, mut cur_gy, mut h_old) =
+                self.get_gradient_and_height(data, n, x, y);
+
+            for _ in 0..max_steps {
+                // Accumulate water at current position (bilinear)
+                let xi = x as usize;
+                let yi = y as usize;
+                if xi < n && yi < n {
+                    let u = x - xi as f32;
+                    let v = y - yi as f32;
+                    let xi1 = (xi + 1).min(n - 1);
+                    let yi1 = (yi + 1).min(n - 1);
+                    wetness[yi * n + xi] += water * (1.0 - u) * (1.0 - v);
+                    wetness[yi * n + xi1] += water * u * (1.0 - v);
+                    wetness[yi1 * n + xi] += water * (1.0 - u) * v;
+                    wetness[yi1 * n + xi1] += water * u * v;
+                }
+
+                dir_x = dir_x * inertia - cur_gx * (1.0 - inertia);
+                dir_y = dir_y * inertia - cur_gy * (1.0 - inertia);
+                let len_sq = dir_x * dir_x + dir_y * dir_y;
+                if len_sq > 0.0 {
+                    let len = len_sq.sqrt();
+                    dir_x /= len;
+                    dir_y /= len;
+                }
+
+                let nx = x + dir_x;
+                let ny = y + dir_y;
+                if nx < 1.0 || nx >= (n - 2) as f32 || ny < 1.0 || ny >= (n - 2) as f32 {
+                    break;
+                }
+
+                let (next_gx, next_gy, h_new) = self.get_gradient_and_height(data, n, nx, ny);
+                let delta_h = h_new - h_old;
+                speed = (speed * speed - delta_h * gravity).max(0.0).sqrt().max(0.01);
+                water *= 1.0 - evaporate;
+                x = nx;
+                y = ny;
+                cur_gx = next_gx;
+                cur_gy = next_gy;
+                h_old = h_new;
+
+                if water < 0.01 {
+                    break;
+                }
+            }
+        }
+
+        // Normalize with sqrt to compress the high-end and reveal fine channels
+        let max = wetness.iter().cloned().fold(0.0_f32, f32::max).max(1e-10);
+        wetness.iter_mut().for_each(|v| *v = (*v / max).sqrt());
+        wetness
+    }
+
     pub fn export_normal_png(&mut self, path: PathBuf) -> Result<(), String> {
         let res = self.export_resolution;
         let data = self.generate(res);

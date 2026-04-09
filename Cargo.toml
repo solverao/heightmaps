@@ -8,7 +8,7 @@ description = "Procedural heightmap generator with egui GUI"
 eframe = { version = "0.31", default-features = false, features = ["glow", "x11", "wayland"] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image"] }
-image = "0.25"
+image = { version = "0.25", features = ["exr"] }
 noise = "0.9"
 rayon = "1"
 rand = { version = "0.8", features = ["small_rng"] }
