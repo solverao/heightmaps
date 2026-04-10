@@ -546,6 +546,67 @@ Los parámetros de exportación, resolución, erosión y vista 3D no se tocan.
 
 ---
 
+##  Resolución vs. Tamaño vs. Altura
+
+### Resolución (1024)
+
+Solo es la **densidad de muestras** — cuántos puntos de altura hay. No determina los metros directamente.
+
+En Terrain3D, el tamaño real en metros depende de `vertex_spacing` (por defecto **1.0**):
+
+```
+tamaño en metros = resolución × vertex_spacing
+1024 px × 1.0 m/px = 1024 × 1024 metros
+```
+
+Si quieres un terreno más grande sin perder detalle, sube `vertex_spacing` a 2.0 → 2048×2048 metros.
+
+---
+
+### R 16 Range — cómo elegir la altura máxima
+
+El PNG 16-bit tiene valores de 0 a 65535, que Terrain3D mapea al rango que defines:
+
+```
+valor 0     → R16 Range X (altura mínima, normalmente 0.0 m)
+valor 65535 → R16 Range Y (altura máxima en metros)
+```
+
+**Regla general para proporción realista:**
+
+```
+altura_max ≈ ancho_terreno × 0.10 a 0.25
+```
+
+|Terreno (1024m × 1024m)|Altura max|Resultado|
+|---|---|---|
+|Llanura con colinas|50 – 80 m|Muy suave|
+|Campo con montañas medias|150 – 300 m|Realista|
+|Montañas pronunciadas|500 – 800 m|Dramático|
+|Estilo alpino extremo|1000 – 2000 m|Épico|
+
+---
+
+### Cómo elegir bien
+
+1. **Decide la escala del mundo primero**: ¿cuántos metros mide el terreno? (`resolución × vertex_spacing`)
+2. **Elige la altura en proporción**: para un juego de a pie, 10-20% del ancho funciona bien; para un juego de vuelo, puedes exagerar
+3. **Ajusta `vertex_spacing`** si el terreno se ve "cuadrado" o demasiado denso
+
+**Ejemplo concreto:**
+
+- Resolución: 1024, `vertex_spacing`: 2.0 → terreno de **2048 × 2048 m**
+- R 16 Range Y: **300 m** → proporciones naturales de montaña media
+- Cada pixel del heightmap = 2 metros de distancia horizontal
+
+---
+
+### Sobre la app
+
+Esta app exporta valores normalizados **[0, 1]**. El valor `1.0` en el heightmap = `R16 Range Y` metros en Godot. No hay que hacer ningún cálculo extra — simplemente decides cuántos metros quieres que valga ese "1.0".
+
+---
+
 ## Dependencias
 
 | Crate | Versión | Uso |
